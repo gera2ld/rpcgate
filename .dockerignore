@@ -1,0 +1,6 @@
+.git
+bin
+pb_data
+.env
+*.md
+!README.md

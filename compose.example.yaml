@@ -1,0 +1,25 @@
+# Copy to compose.yaml on the server. RPC URLs and keys are set in the admin
+# UI (urls), not here.
+#
+#   docker compose up -d
+#   docker compose exec rpcgate /rpcgate superuser upsert you@example.com '<password>'
+#
+# One port serves the proxy (/<token>/<chain>) and the admin UI (/_/).
+services:
+  rpcgate:
+    # Built by the Image workflow (Actions → Image → Run workflow). To build
+    # on the server from a checkout instead, uncomment build.
+    image: ghcr.io/gera2ld/rpcgate:latest
+    # build: .
+    restart: unless-stopped
+    environment:
+      RPCGATE_LISTEN: 0.0.0.0:8545
+    ports:
+      # Bind to the server's LAN address rather than 0.0.0.0 if it has a
+      # public interface too, e.g. "192.168.1.10:8545:8545".
+      - "8545:8545"
+    volumes:
+      - rpcgate-data:/pb_data
+
+volumes:
+  rpcgate-data:
