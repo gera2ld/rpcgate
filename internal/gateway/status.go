@@ -91,7 +91,11 @@ func (g *Gateway) WriteStatus(w io.Writer, listen string, urls []URLInfo) {
 		if chainList == "" {
 			chainList = "(none; select its URLs in the admin UI)"
 		}
-		fmt.Fprintf(tw, "  %s\t%d/day\t%s\t%s\n", tok.name, tok.budget, methods, chainList)
+		budget := "unlimited"
+		if tok.budget > 0 {
+			budget = fmt.Sprintf("%d/day", tok.budget)
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", tok.name, budget, methods, chainList)
 	}
 	_ = tw.Flush()
 	if len(toks) == 0 {
@@ -112,7 +116,7 @@ type TokenStatus struct {
 
 // StatusLimits are the token's limits.
 type StatusLimits struct {
-	DailyBudget int `json:"daily_budget"` // per chain per UTC day
+	DailyBudget int `json:"daily_budget"` // per chain per UTC day; 0 = unlimited
 	MaxBatch    int `json:"max_batch"`
 }
 
@@ -123,7 +127,7 @@ type ChainStatus struct {
 	URL       string   `json:"url"` // the token's own URL for this chain
 	Via       string   `json:"via"` // the name of the upstream URL it uses
 	UsedToday int64    `json:"used_today"`
-	Remaining int64    `json:"remaining_today"`
+	Remaining *int64   `json:"remaining_today,omitempty"` // absent when unlimited
 	Methods   []string `json:"methods"`
 }
 
@@ -152,7 +156,7 @@ func (g *Gateway) serveStatus(w http.ResponseWriter, r *http.Request, tok *token
 		sort.Strings(methods)
 		used := g.usage.Spent(day, tok.id, c.Name)
 		st.Chains = append(st.Chains, ChainStatus{Chain: c.Name, Family: c.Family, URL: base + c.Name, Via: up.Source,
-			UsedToday: used, Remaining: max(int64(tok.budget)-used, 0), Methods: methods})
+			UsedToday: used, Remaining: remaining(tok.budget, used), Methods: methods})
 	}
 	w.Header().Set("Content-Type", contentTypeJSON)
 	enc := json.NewEncoder(w)
@@ -172,4 +176,12 @@ func requestOrigin(r *http.Request) string {
 		scheme = p
 	}
 	return scheme + "://" + r.Host
+}
+
+func remaining(budget int, used int64) *int64 {
+	if budget <= 0 {
+		return nil
+	}
+	r := max(int64(budget)-used, 0)
+	return &r
 }

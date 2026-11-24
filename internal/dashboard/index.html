@@ -184,7 +184,7 @@ function render() {
     return `<tr class="pick${t.id === state.selected ? " on" : ""}" data-id="${esc(t.id)}">
       <td>${esc(t.name)}${tags}</td>
       <td>${esc((t.expand?.urls || []).map((u) => u.name).join(", "))}</td>
-      <td class="n">${t.deleted ? "" : fmt(t.daily_budget || 200000)}</td>
+      <td class="n">${t.deleted ? "" : (t.daily_budget ? fmt(t.daily_budget) : "unlimited")}</td>
       <td>${t.deleted ? "" : ago(t.last_used)}</td>
       <td class="n">${fmt(now.requests)}</td>
       <td class="n">${fmt(all.requests)}</td>

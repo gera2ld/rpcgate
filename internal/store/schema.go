@@ -53,7 +53,7 @@ func Collections() []*core.Collection {
 			Help: "The upstream URLs this token uses; they also decide its chains. Per chain, the first enabled one (oldest first) is used."},
 		&core.JSONField{Name: "methods", MaxSize: 64 << 10,
 			Help: `JSON array of method patterns; * matches anything, e.g. ["*"] or ["eth_*", "getProgramAccounts"]. Empty: each chain's read-only defaults.`},
-		num("daily_budget", "Requests per chain per UTC day; 0 = 200000."),
+		num("daily_budget", "Requests per chain per UTC day; 0 = unlimited."),
 		&core.DateField{Name: "last_used", Help: "Its latest request, to within 15 seconds. Set by rpcgate."},
 	)
 	timestamps(tokens)

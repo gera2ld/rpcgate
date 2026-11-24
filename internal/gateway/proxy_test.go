@@ -270,9 +270,9 @@ func TestWriteStatus(t *testing.T) {
 		"rpcgate on http://0.0.0.0:8545: proxy at /<token>/<chain>, usage at /dashboard, admin UI at /_/",
 		"  bsc       ankr-fe      56", "ready", "  bsc       old          56", "disabled",
 		"  arbitrum  ankr-be-arb  42161", "failed", "ankr-be-arb (arbitrum): upstream is chain 56, expected 42161",
-		"frontend  200000/day  defaults  bsc (ankr-fe), solana (node)",
-		"backend   100/day     eth_*     bsc (ankr-be), arbitrum (ankr-be-arb, failed)",
-		"idle      200000/day  defaults  (none; select its URLs in the admin UI)",
+		"frontend  unlimited  defaults  bsc (ankr-fe), solana (node)",
+		"backend   100/day    eth_*     bsc (ankr-be), arbitrum (ankr-be-arb, failed)",
+		"idle      unlimited  defaults  (none; select its URLs in the admin UI)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status lacks %q:\n%s", want, out)

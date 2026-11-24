@@ -407,7 +407,7 @@ func TestUsageFlushAndBudgetReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Only the chains with a URL are listed: bsc and solana.
-	if st.Token != "indexer" || len(st.Chains) != 2 || st.Chains[0].Chain != "bsc" || st.Chains[0].UsedToday != 3 || st.Chains[0].Remaining != 0 || st.Chains[0].Via != "test" ||
+	if st.Token != "indexer" || len(st.Chains) != 2 || st.Chains[0].Chain != "bsc" || st.Chains[0].UsedToday != 3 || st.Chains[0].Remaining == nil || *st.Chains[0].Remaining != 0 || st.Chains[0].Via != "test" ||
 		st.Chains[0].URL != h2.srv.URL+"/"+secret+"/bsc" {
 		t.Fatalf("status after restart: %+v", st)
 	}
@@ -568,5 +568,35 @@ func TestTokenLastUsed(t *testing.T) {
 	h.post(t, secret, "bsc", `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":[]}`)
 	if len(h.gw.Usage().DrainLastUsed()) != 1 {
 		t.Error("a rejected call did not count as a use")
+	}
+}
+
+// daily_budget is used as stored: 0 is unlimited, anything else is the limit.
+func TestTokenBudget(t *testing.T) {
+	rpc := fakeRPC(t)
+	h := start(t, t.TempDir(), rpcURL(rpc))
+	const secret = "budgetdefault0123456789abcd"
+	tok := h.createToken(t, "indexer", secret, h.allURLs(t))
+	status := func() gateway.TokenStatus {
+		resp, err := http.Get(h.srv.URL + "/" + secret + "/status")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var st gateway.TokenStatus
+		if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	if st := status(); st.Limits.DailyBudget != 0 || st.Chains[0].Remaining != nil {
+		t.Fatalf("unlimited status: %+v", st)
+	}
+	tok.Set("daily_budget", 5)
+	if err := h.app.Save(tok); err != nil {
+		t.Fatal(err)
+	}
+	if st := status(); st.Limits.DailyBudget != 5 || st.Chains[0].Remaining == nil || *st.Chains[0].Remaining != 5 {
+		t.Fatalf("budget 5 status: %+v", st)
 	}
 }

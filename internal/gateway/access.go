@@ -119,9 +119,6 @@ func DefaultMethods(f Family) []string {
 	return nil
 }
 
-// DefaultDailyBudget is a token's budget when its daily_budget is 0.
-const DefaultDailyBudget = 200000
-
 // MaxBatch is the most items a JSON-RPC batch may hold.
 const MaxBatch = 50
 
@@ -179,15 +176,7 @@ type Token struct {
 	Secret      string // only read by NewAccess, then dropped
 	URLs        []string
 	Methods     []string // patterns; empty means the family defaults
-	DailyBudget int      // per chain per UTC day; 0 means DefaultDailyBudget
-}
-
-// Budget returns the token's daily budget per chain.
-func (t Token) Budget() int {
-	if t.DailyBudget > 0 {
-		return t.DailyBudget
-	}
-	return DefaultDailyBudget
+	DailyBudget int      // per chain per UTC day; 0 means unlimited
 }
 
 // MinTokenLength is the shortest secret the gateway accepts.
@@ -216,7 +205,7 @@ func newAccess(tokens []Token) *access {
 			continue
 		}
 		e := &tokenEntry{id: t.ID, name: t.Name, secret: t.Secret, urls: map[string]bool{},
-			patterns: t.Methods, budget: t.Budget(), methods: map[Family]methodSet{}}
+			patterns: t.Methods, budget: max(t.DailyBudget, 0), methods: map[Family]methodSet{}}
 		for _, id := range t.URLs {
 			e.urls[id] = true
 		}

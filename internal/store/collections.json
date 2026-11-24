@@ -202,7 +202,7 @@
         "type": "json"
       },
       {
-        "help": "Requests per chain per UTC day; 0 = 200000.",
+        "help": "Requests per chain per UTC day; 0 = unlimited.",
         "hidden": false,
         "id": "number4073504983",
         "max": null,

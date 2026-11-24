@@ -286,7 +286,7 @@ func TestTokenStatus(t *testing.T) {
 		t.Fatalf("status: %+v", st)
 	}
 	bsc, sol := st.Chains[0], st.Chains[1]
-	if bsc.Chain != "bsc" || bsc.UsedToday != 1 || bsc.Remaining != 9 || bsc.Via != "test" || bsc.URL != srv.URL+"/"+tokenA+"/bsc" {
+	if bsc.Chain != "bsc" || bsc.UsedToday != 1 || bsc.Remaining == nil || *bsc.Remaining != 9 || bsc.Via != "test" || bsc.URL != srv.URL+"/"+tokenA+"/bsc" {
 		t.Errorf("bsc: %+v", bsc)
 	}
 	if sol.Chain != "solana" || sol.Family != Solana || sol.UsedToday != 1 || sol.URL != srv.URL+"/"+tokenA+"/solana" || !strings.Contains(strings.Join(sol.Methods, ","), "get*") {

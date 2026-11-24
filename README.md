@@ -171,8 +171,7 @@ In the admin UI, open **tokens** → **New record**:
   chain only if one of them serves it.
 - **methods**: leave empty for the read-only defaults, or see
   [Methods](#methods).
-- **daily_budget**: requests per chain per UTC day. Leave it 0 for the
-  default, 200,000.
+- **daily_budget**: requests per chain per UTC day; 0 = unlimited.
 
 Save, copy the token, and give the client its URL:
 
@@ -223,7 +222,7 @@ All the collections are superuser-only: none has an API rule.
 
 **tokens**: `name`, `token`, `enabled`, `urls` (see [URLs](#urls)),
 `methods` (a JSON array of method patterns; see [Methods](#methods)),
-`daily_budget` (0 = 200,000), `last_used` (set by rpcgate at each usage
+`daily_budget` (0 = unlimited), `last_used` (set by rpcgate at each usage
 flush, so to within 15 seconds; rejected calls count). The budget applies per
 chain per UTC day, and counts each item in a batch; a batch holds at most 50.
 Editing the budget keeps today's count: raise it and the token gets the
