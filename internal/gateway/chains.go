@@ -15,6 +15,8 @@ var Chains = []Chain{
 	{Name: "avalanche", Family: EVM, ChainID: 43114}, // C-Chain
 	{Name: "solana", Family: Solana, GenesisHash: SolanaMainnetGenesis},
 	{Name: "ankr", Family: Ankr}, // Ankr's Advanced API
+	// Helius's mainnet RPC, for its own methods; solana can use any provider.
+	{Name: "helius", Family: Helius, GenesisHash: SolanaMainnetGenesis},
 }
 
 // ChainNames lists the names of Chains.

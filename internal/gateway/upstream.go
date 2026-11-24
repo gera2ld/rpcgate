@@ -49,10 +49,10 @@ func (c Chain) Validate() error {
 	case !ValidName(c.Name):
 		return errors.New("name must be lowercase letters, digits and dashes, and not \"status\"")
 	case !slices.Contains(Families, c.Family):
-		return errors.New("family must be evm, solana or ankr")
+		return errors.New("family must be evm, solana, ankr or helius")
 	case c.Family == EVM && c.ChainID == 0:
 		return errors.New("evm chain needs an expected chain ID")
-	case c.Family == Solana && strings.TrimSpace(c.GenesisHash) == "":
+	case c.Family.solanaLike() && strings.TrimSpace(c.GenesisHash) == "":
 		return errors.New("solana chain needs an expected genesis hash")
 	}
 	return nil
@@ -213,7 +213,7 @@ func (u *Upstream) call(ctx context.Context, method string) (json.RawMessage, er
 }
 
 // Check confirms the upstream serves the expected chain: eth_chainId on EVM,
-// getGenesisHash on Solana. It spends no token's budget. It catches a URL
+// getGenesisHash on Solana and Helius. It spends no token's budget. It catches a URL
 // for the wrong chain, or a bad key. Ankr's Advanced API serves many chains
 // and has no free call to check, so it passes once it has a URL.
 func (u *Upstream) Check(ctx context.Context) error {
@@ -242,7 +242,7 @@ func (u *Upstream) Check(ctx context.Context) error {
 		}
 	case Ankr:
 		return nil
-	case Solana:
+	case Solana, Helius:
 		res, err := u.call(ctx, "getGenesisHash")
 		if err != nil {
 			return err

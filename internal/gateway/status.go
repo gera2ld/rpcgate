@@ -22,7 +22,7 @@ type URLInfo struct {
 
 func expected(c Chain) string {
 	switch c.Family {
-	case Solana:
+	case Solana, Helius:
 		return c.GenesisHash
 	case Ankr:
 		return "-"

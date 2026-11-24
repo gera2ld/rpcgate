@@ -68,6 +68,7 @@ the database, provider keys included.
    | `avalanche` | `https://rpc.ankr.com/avalanche/<key>` (C-Chain) |
    | `solana` | `https://rpc.ankr.com/solana/<key>` |
    | `ankr` | `https://rpc.ankr.com/multichain/<key>` (the Advanced API) |
+   | `helius` | `https://mainnet.helius-rpc.com/?api-key=<key>` (from Helius) |
 
    The chains reload at once, without a restart.
 
@@ -83,9 +84,9 @@ chain's expected ID (EVM), and `getGenesisHash` its expected genesis hash
 
 The chains are a fixed list in
 [`internal/gateway/chains.go`](internal/gateway/chains.go): `bsc`, `arbitrum`,
-`base`, `polygon`, `avalanche` (C-Chain), `solana` (mainnet) and `ankr`
-(Ankr's Advanced API). A
-chain without an enabled URL is `off`. To add one, add a line there, run
+`base`, `polygon`, `avalanche` (C-Chain), `solana` (mainnet), `ankr`
+(Ankr's Advanced API) and `helius` (Helius's Solana RPC with its own
+methods). A chain without an enabled URL is `off`. To add one, add a line there, run
 `just schema`, and rebuild.
 
 The first start creates a `read-only` profile allowing every chain, with a
@@ -125,6 +126,30 @@ token and NFT holders and transfers, blocks, logs, transactions). It has no
 chain ID to check, so it is ready once it has a URL. The daily budget and
 batch cap apply as on any chain; note that Ankr bills these calls
 at a higher rate than plain node calls.
+
+### Helius
+
+The `helius` chain is Helius's Solana mainnet RPC, at `/<token>/helius`, for
+Helius's own JSON-RPC methods. It is separate from `solana`, which can use any
+provider. Give it your Helius URL with the key in it.
+
+It is checked like `solana` (`getGenesisHash` must be mainnet's), and its
+default methods are the Solana defaults plus Helius's read-only methods:
+`getTransactionsForAddress`, the DAS API (`getAsset`, `getAssetBatch`,
+`getAssetProof`, `getAssetProofBatch`, `getAssetsByOwner`,
+`getAssetsByAuthority`, `getAssetsByCreator`, `getAssetsByGroup`,
+`searchAssets`, `getSignaturesForAsset`, `getTokenAccounts`,
+`getNftEditions`) and `getPriorityFeeEstimate`.
+
+```bash
+curl http://<server>:8545/<token>/helius -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getTransactionsForAddress","params":["<address>",{"limit":10}]}'
+```
+
+Only JSON-RPC is proxied: Helius's REST APIs (`api.helius.xyz/v0/...`, such as
+Enhanced Transactions and webhooks) are not. Helius charges more credits for
+some of these methods than for plain calls, while the daily budget counts
+calls, so give profiles that use `helius` a budget to match.
 
 ## Creating a token
 
@@ -224,6 +249,8 @@ A non-empty list replaces the defaults; it does not add to them.
   `getProgramAccounts` and `sendTransaction` are not among them.
 - **Ankr Advanced API** defaults: the read-only `ankr_*` queries; see
   [Ankr's Advanced API](#ankrs-advanced-api).
+- **Helius** defaults: the Solana defaults plus Helius's read-only methods;
+  see [Helius](#helius).
 
 WebSocket subscriptions aren't supported yet; an upgrade request gets a 501.
 The routes leave room for them at the same `/<token>/<chain>` path.

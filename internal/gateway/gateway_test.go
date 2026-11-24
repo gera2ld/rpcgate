@@ -439,3 +439,34 @@ func TestRequestOrigin(t *testing.T) {
 		t.Errorf("odd proto: %s", got)
 	}
 }
+
+// helius is a Solana chain with Helius's own methods on top; solana itself
+// does not get them.
+func TestHeliusMethods(t *testing.T) {
+	up := newUpstream(t)
+	key := "heliuskey0123456789"
+	helius := ResolveUpstream(Chain{Name: "helius", Family: Helius, GenesisHash: solanaGenesis, Endpoint: "helius"},
+		&Endpoint{Name: "helius", URL: up.url() + "?api-key=" + key}, nil, 0)
+	if err := helius.Check(context.Background()); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	helius.Ready = true
+	p := Profile{Name: "def", Chains: []string{"helius", "solana"}}
+	_, srv := newGateway(t, Options{}, []*Upstream{helius, ready(t, solanaChain, up.url())},
+		Token{ID: "a", Name: "a", Secret: tokenA, Profile: &p})
+	h, sol := srv.URL+"/"+tokenA+"/helius", srv.URL+"/"+tokenA+"/solana"
+	for _, m := range []string{"getTransactionsForAddress", "getAssetsByOwner", "getSlot"} {
+		if _, body := post(t, h, `{"jsonrpc":"2.0","id":1,"method":"`+m+`","params":["x"]}`); !strings.Contains(body, `"result"`) {
+			t.Errorf("helius %s: %s", m, body)
+		}
+	}
+	for _, c := range []struct{ url, method string }{{h, "sendTransaction"}, {sol, "getTransactionsForAddress"}} {
+		if _, body := post(t, c.url, `{"jsonrpc":"2.0","id":1,"method":"`+c.method+`","params":[]}`); !strings.Contains(body, "not allowed") {
+			t.Errorf("%s %s allowed: %s", c.url, c.method, body)
+		}
+	}
+	wrong := ResolveUpstream(Chain{Name: "helius", Family: Helius, GenesisHash: "other", Endpoint: "x"}, endpoint(up.url()), nil, 0)
+	if err := wrong.Check(context.Background()); err == nil || !strings.Contains(err.Error(), "genesis hash") {
+		t.Errorf("wrong genesis: %v", err)
+	}
+}

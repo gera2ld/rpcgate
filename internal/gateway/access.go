@@ -15,10 +15,17 @@ const (
 	// Ankr is Ankr's Advanced API (https://rpc.ankr.com/multichain/<key>):
 	// ankr_* methods that name their chains in their params.
 	Ankr Family = "ankr"
+	// Helius is Helius's Solana mainnet RPC: the Solana methods plus
+	// Helius's own, such as getTransactionsForAddress and the DAS API.
+	Helius Family = "helius"
 )
 
 // Families lists every chain family.
-var Families = []Family{EVM, Solana, Ankr}
+var Families = []Family{EVM, Solana, Ankr, Helius}
+
+// solanaLike reports whether f speaks Solana JSON-RPC, so its upstream is
+// checked by getGenesisHash.
+func (f Family) solanaLike() bool { return f == Solana || f == Helius }
 
 // DefaultEVMMethods are read-only. Anything that signs, sends, subscribes, or
 // administers is absent; a profile's methods replace them.
@@ -77,6 +84,26 @@ var DefaultAnkrMethods = []string{
 	"ankr_getInteractions",
 }
 
+// DefaultHeliusMethods are Helius's own read-only methods. Its family's
+// defaults are these plus DefaultSolanaMethods. getPriorityFeeEstimate only
+// reads, though it is for sending.
+var DefaultHeliusMethods = []string{
+	"getTransactionsForAddress",
+	"getAsset",
+	"getAssetBatch",
+	"getAssetProof",
+	"getAssetProofBatch",
+	"getAssetsByOwner",
+	"getAssetsByAuthority",
+	"getAssetsByCreator",
+	"getAssetsByGroup",
+	"searchAssets",
+	"getSignaturesForAsset",
+	"getTokenAccounts",
+	"getNftEditions",
+	"getPriorityFeeEstimate",
+}
+
 // DefaultMethods returns a copy of the family's default allowlist.
 func DefaultMethods(f Family) []string {
 	switch f {
@@ -86,6 +113,8 @@ func DefaultMethods(f Family) []string {
 		return slices.Clone(DefaultSolanaMethods)
 	case Ankr:
 		return slices.Clone(DefaultAnkrMethods)
+	case Helius:
+		return slices.Concat(DefaultSolanaMethods, DefaultHeliusMethods)
 	}
 	return nil
 }

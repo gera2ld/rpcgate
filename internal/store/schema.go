@@ -33,7 +33,8 @@ func Collections() []*core.Collection {
 		&core.TextField{Name: "url", Required: true, Max: 2048, Hidden: true,
 			Help: "Write-only: never shown after saving; leave empty when editing to keep it. " +
 				"This chain's RPC URL with the key, used as it is, e.g. https://rpc.ankr.com/bsc/<key>. " +
-				"For ankr (the Advanced API): https://rpc.ankr.com/multichain/<key>."},
+				"For ankr (the Advanced API): https://rpc.ankr.com/multichain/<key>. " +
+				"For helius: https://mainnet.helius-rpc.com/?api-key=<key>."},
 		&core.BoolField{Name: "enabled", Help: "A chain uses its first enabled URL (oldest first). Untick to switch without deleting."},
 	)
 	timestamps(urls)

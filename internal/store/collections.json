@@ -41,7 +41,8 @@
           "polygon",
           "avalanche",
           "solana",
-          "ankr"
+          "ankr",
+          "helius"
         ]
       },
       {
@@ -61,7 +62,7 @@
       },
       {
         "autogeneratePattern": "",
-        "help": "Write-only: never shown after saving; leave empty when editing to keep it. This chain's RPC URL with the key, used as it is, e.g. https://rpc.ankr.com/bsc/<key>. For ankr (the Advanced API): https://rpc.ankr.com/multichain/<key>.",
+        "help": "Write-only: never shown after saving; leave empty when editing to keep it. This chain's RPC URL with the key, used as it is, e.g. https://rpc.ankr.com/bsc/<key>. For ankr (the Advanced API): https://rpc.ankr.com/multichain/<key>. For helius: https://mainnet.helius-rpc.com/?api-key=<key>.",
         "hidden": true,
         "id": "text4101391790",
         "max": 2048,
@@ -154,7 +155,7 @@
         "help": "Chains tokens with this profile may call.",
         "hidden": false,
         "id": "select1611589309",
-        "maxSelect": 7,
+        "maxSelect": 8,
         "name": "chains",
         "presentable": false,
         "required": false,
@@ -167,7 +168,8 @@
           "polygon",
           "avalanche",
           "solana",
-          "ankr"
+          "ankr",
+          "helius"
         ]
       },
       {
