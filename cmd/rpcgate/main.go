@@ -3,8 +3,8 @@
 // and never see the provider URLs or keys.
 //
 // It is a PocketBase app, and one port serves both: the proxy at
-// /<token>/<chain> and /<token>/status, and PocketBase's admin UI (/_/) and
-// API (/api/) for the chains' URLs, profiles, tokens and
+// /<token>/<chain> and /<token>/status, the usage dashboard (/dashboard),
+// and PocketBase's admin UI (/_/) and API (/api/) for the chains' URLs, profiles, tokens and
 // usage. RPC URLs are set there, not in the environment. PocketBase's
 // backup API is switched off, because a backup holds the provider keys.
 //
@@ -31,6 +31,7 @@ import (
 	"ganigeorgiev.com/pocketbase/pocketbase"
 	"ganigeorgiev.com/pocketbase/pocketbase/core"
 
+	"rpcgate/internal/dashboard"
 	"rpcgate/internal/gateway"
 	"rpcgate/internal/store"
 )
@@ -110,6 +111,7 @@ func run() error {
 		if err := st.Start(context.Background()); err != nil {
 			return err
 		}
+		dashboard.Register(se)
 		// PocketBase builds its handler and listener here; it starts
 		// serving only after this hook returns, with the wrapped handler.
 		if err := se.Next(); err != nil {

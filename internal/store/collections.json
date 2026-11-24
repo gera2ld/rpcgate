@@ -39,6 +39,7 @@
           "arbitrum",
           "base",
           "polygon",
+          "avalanche",
           "solana",
           "ankr"
         ]
@@ -153,7 +154,7 @@
         "help": "Chains tokens with this profile may call.",
         "hidden": false,
         "id": "select1611589309",
-        "maxSelect": 6,
+        "maxSelect": 7,
         "name": "chains",
         "presentable": false,
         "required": false,
@@ -164,6 +165,7 @@
           "arbitrum",
           "base",
           "polygon",
+          "avalanche",
           "solana",
           "ankr"
         ]
@@ -311,6 +313,18 @@
         "required": true,
         "system": false,
         "type": "relation"
+      },
+      {
+        "help": "Its latest request, to within 15 seconds. Set by rpcgate.",
+        "hidden": false,
+        "id": "date4016875332",
+        "max": "",
+        "min": "",
+        "name": "last_used",
+        "presentable": false,
+        "required": false,
+        "system": false,
+        "type": "date"
       },
       {
         "hidden": false,

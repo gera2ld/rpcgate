@@ -12,6 +12,7 @@ var Chains = []Chain{
 	{Name: "arbitrum", Family: EVM, ChainID: 42161},
 	{Name: "base", Family: EVM, ChainID: 8453},
 	{Name: "polygon", Family: EVM, ChainID: 137},
+	{Name: "avalanche", Family: EVM, ChainID: 43114}, // C-Chain
 	{Name: "solana", Family: Solana, GenesisHash: SolanaMainnetGenesis},
 	{Name: "ankr", Family: Ankr}, // Ankr's Advanced API
 }

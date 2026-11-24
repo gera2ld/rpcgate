@@ -122,6 +122,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, nil, codeUnauthorized, "unauthorized")
 		return
 	}
+	g.usage.Touch(tok.id, g.opts.Now())
 	if parts[1] == StatusPath {
 		g.serveStatus(w, r, tok)
 		return

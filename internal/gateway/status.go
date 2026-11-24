@@ -34,7 +34,7 @@ func expected(c Chain) string {
 // the saved URLs by name, and each profile's limits. It never prints a URL
 // or a token.
 func WriteStatus(w io.Writer, listen string, ups []*Upstream, urls []URLInfo, profiles []Profile, tokens int) {
-	fmt.Fprintf(w, "rpcgate on http://%s: proxy at /<token>/<chain>, admin UI at /_/\n\n", listen)
+	fmt.Fprintf(w, "rpcgate on http://%s: proxy at /<token>/<chain>, usage at /dashboard, admin UI at /_/\n\n", listen)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "  CHAIN\tFAMILY\tEXPECTED\tSTATUS\tURL")
 	var notes []string

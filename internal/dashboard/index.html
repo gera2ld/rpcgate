@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rpcgate usage</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e3e3de;
+  --accent: #2f6fdb; --bad: #c2410c; --row: #f0f0ec;
+  --c0: #2f6fdb; --c1: #0f9d76; --c2: #d97706; --c3: #9333ea; --c4: #db2777; --c5: #0891b2; --c6: #65a30d; --c7: #78716c;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --panel: #1f1f1d; --text: #ececea; --muted: #9c9c96; --line: #34342f;
+    --accent: #6f9dff; --bad: #fb923c; --row: #2a2a27;
+    --c0: #6f9dff; --c1: #34d399; --c2: #fbbf24; --c3: #c084fc; --c4: #f472b6; --c5: #22d3ee; --c6: #a3e635; --c7: #a8a29e;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; }
+h1 { font-size: 18px; margin: 0; flex: 1; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+.muted { color: var(--muted); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 16px; overflow-x: auto; }
+select, button, input { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr.pick { cursor: pointer; }
+tbody tr.pick:hover, tbody tr.on { background: var(--row); }
+.bad { color: var(--bad); }
+.tag { font-size: 12px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 0; font-size: 12px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+svg text { fill: var(--muted); font-size: 11px; }
+#login { max-width: 340px; margin: 60px auto; }
+#login form { display: grid; gap: 10px; }
+#err { color: var(--bad); min-height: 1.4em; }
+</style>
+</head>
+<body>
+<main>
+  <div id="login" class="panel" hidden>
+    <h2>Sign in</h2>
+    <p class="muted">Use your rpcgate superuser account, or sign in to the <a href="/_/">admin UI</a> first and reload.</p>
+    <form id="loginForm">
+      <input name="email" type="email" placeholder="Email" autocomplete="username" required>
+      <input name="password" type="password" placeholder="Password" autocomplete="current-password" required>
+      <button class="primary">Sign in</button>
+    </form>
+  </div>
+
+  <div id="app" hidden>
+    <header>
+      <h1>rpcgate usage</h1>
+      <select id="range" aria-label="Range">
+        <option value="7">Last 7 days</option>
+        <option value="30" selected>Last 30 days</option>
+        <option value="90">Last 90 days</option>
+      </select>
+      <button id="refresh">Refresh</button>
+      <a href="/_/" class="muted">Admin UI</a>
+    </header>
+
+    <div class="panel">
+      <h2>Tokens</h2>
+      <table>
+        <thead><tr>
+          <th>Token</th><th>Profile</th><th>Last used</th>
+          <th class="n">Today</th><th class="n">Requests</th><th class="n">Rejected</th><th class="n">Errors</th>
+        </tr></thead>
+        <tbody id="tokens"></tbody>
+      </table>
+      <p class="muted" style="margin:8px 0 0">Days are UTC. Requests, rejected and errors cover the selected range. Counts are written every 15 seconds.</p>
+    </div>
+
+    <div class="panel" id="detail" hidden>
+      <h2 id="detailTitle"></h2>
+      <div id="chart"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <div class="panel" id="methodsPanel" hidden>
+      <h2>By chain and method</h2>
+      <table>
+        <thead><tr><th>Chain</th><th>Method</th><th class="n">Requests</th><th class="n">Rejected</th><th class="n">Errors</th></tr></thead>
+        <tbody id="methods"></tbody>
+      </table>
+    </div>
+  </div>
+  <p id="err"></p>
+</main>
+<script>
+"use strict";
+// The admin UI keeps its superuser session here (PocketBase LocalAuthStore,
+// keyed by the admin UI's path), so signing in there signs in here too.
+const AUTH_KEY = "__pb_superusers__/_";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const fmt = (n) => Number(n || 0).toLocaleString();
+
+let state = { tokens: [], rows: [], days: [], selected: null };
+
+function authToken() {
+  try { return JSON.parse(localStorage.getItem(AUTH_KEY) || "{}").token || ""; } catch { return ""; }
+}
+
+async function api(path) {
+  const res = await fetch(path, { headers: { Authorization: authToken() } });
+  if (res.status === 401 || res.status === 403) throw Object.assign(new Error("signed out"), { auth: true });
+  if (!res.ok) throw new Error(path.split("?")[0] + ": HTTP " + res.status);
+  return res.json();
+}
+
+async function listAll(collection, params) {
+  const out = [];
+  for (let page = 1; ; page++) {
+    const q = new URLSearchParams({ ...params, page, perPage: 1000, skipTotal: 1 });
+    const data = await api(`/api/collections/${collection}/records?${q}`);
+    out.push(...data.items);
+    if (data.items.length < 1000) return out;
+  }
+}
+
+function utcDay(d) { return d.toISOString().slice(0, 10); }
+
+function dayList(n) {
+  const days = [], now = new Date();
+  for (let i = n - 1; i >= 0; i--) days.push(utcDay(new Date(now.getTime() - i * 86400000)));
+  return days;
+}
+
+function ago(iso) {
+  if (!iso) return '<span class="muted">never</span>';
+  const t = new Date(iso.replace(" ", "T"));
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  const rel = s < 60 ? "just now" : s < 3600 ? Math.floor(s / 60) + " min ago"
+    : s < 86400 ? Math.floor(s / 3600) + " h ago" : Math.floor(s / 86400) + " d ago";
+  return `<span title="${esc(t.toLocaleString())}">${rel}</span>`;
+}
+
+async function load() {
+  $("err").textContent = "";
+  const n = Number($("range").value);
+  state.days = dayList(n);
+  const [tokens, rows] = await Promise.all([
+    // Never ask for the token field: the dashboard has no use for secrets.
+    listAll("tokens", { fields: "id,name,enabled,last_used,expand.profile.name", expand: "profile", sort: "name" }),
+    listAll("usage", {
+      fields: "day,token_id,token_name,chain,method,requests,rejections,upstream_errors",
+      filter: `day >= "${state.days[0]}"`,
+    }),
+  ]);
+  state.tokens = tokens;
+  state.rows = rows;
+  render();
+}
+
+function sums(rows) {
+  const s = { requests: 0, rejections: 0, upstream_errors: 0 };
+  for (const r of rows) { s.requests += r.requests; s.rejections += r.rejections; s.upstream_errors += r.upstream_errors; }
+  return s;
+}
+
+function render() {
+  const today = state.days[state.days.length - 1];
+  const known = new Set(state.tokens.map((t) => t.id));
+  // Usage of deleted tokens still counts; show it under its last name.
+  const extra = [...new Map(state.rows.filter((r) => !known.has(r.token_id))
+    .map((r) => [r.token_id, { id: r.token_id, name: r.token_name || r.token_id, deleted: true }])).values()];
+  const list = [...state.tokens, ...extra];
+  if (!state.selected && list.length) state.selected = list[0].id;
+
+  $("tokens").innerHTML = list.map((t) => {
+    const mine = state.rows.filter((r) => r.token_id === t.id);
+    const all = sums(mine), now = sums(mine.filter((r) => r.day === today));
+    const tags = t.deleted ? ' <span class="tag">deleted</span>' : t.enabled ? "" : ' <span class="tag">disabled</span>';
+    return `<tr class="pick${t.id === state.selected ? " on" : ""}" data-id="${esc(t.id)}">
+      <td>${esc(t.name)}${tags}</td>
+      <td>${esc(t.expand?.profile?.name || "")}</td>
+      <td>${t.deleted ? "" : ago(t.last_used)}</td>
+      <td class="n">${fmt(now.requests)}</td>
+      <td class="n">${fmt(all.requests)}</td>
+      <td class="n${all.rejections ? " bad" : ""}">${fmt(all.rejections)}</td>
+      <td class="n${all.upstream_errors ? " bad" : ""}">${fmt(all.upstream_errors)}</td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="7" class="muted">No tokens yet.</td></tr>';
+
+  const sel = list.find((t) => t.id === state.selected);
+  $("detail").hidden = $("methodsPanel").hidden = !sel;
+  if (!sel) return;
+  const mine = state.rows.filter((r) => r.token_id === sel.id);
+  $("detailTitle").textContent = `${sel.name}: requests per day by chain`;
+  renderChart(mine);
+
+  const byMethod = new Map();
+  for (const r of mine) {
+    const k = r.chain + "\u0000" + r.method;
+    const s = byMethod.get(k) || { chain: r.chain, method: r.method, requests: 0, rejections: 0, upstream_errors: 0 };
+    s.requests += r.requests; s.rejections += r.rejections; s.upstream_errors += r.upstream_errors;
+    byMethod.set(k, s);
+  }
+  const methods = [...byMethod.values()].sort((a, b) => b.requests - a.requests || b.rejections - a.rejections);
+  $("methods").innerHTML = methods.map((m) => `<tr>
+      <td>${esc(m.chain)}</td><td>${esc(m.method)}</td>
+      <td class="n">${fmt(m.requests)}</td>
+      <td class="n${m.rejections ? " bad" : ""}">${fmt(m.rejections)}</td>
+      <td class="n${m.upstream_errors ? " bad" : ""}">${fmt(m.upstream_errors)}</td>
+    </tr>`).join("") || '<tr><td colspan="5" class="muted">No calls in this range.</td></tr>';
+}
+
+function renderChart(rows) {
+  const days = state.days;
+  const chains = [...new Set(rows.map((r) => r.chain))].sort();
+  const per = new Map(days.map((d) => [d, new Map()]));
+  for (const r of rows) {
+    const m = per.get(r.day);
+    if (m) m.set(r.chain, (m.get(r.chain) || 0) + r.requests);
+  }
+  const totals = days.map((d) => [...per.get(d).values()].reduce((a, b) => a + b, 0));
+  const max = Math.max(1, ...totals);
+  // Drawn at the container's real width, so labels stay legible on phones.
+  const W = Math.max(300, $("chart").clientWidth || 1000), H = 220, L = 56, B = 24, T = 8;
+  const bw = (W - L) / days.length, gap = Math.min(4, bw * 0.2);
+  const y = (v) => T + (H - T - B) * (1 - v / max);
+  const color = (c) => `var(--c${chains.indexOf(c) % 8})`;
+  let svg = "";
+  for (const f of [0, 0.5, 1]) {
+    const v = Math.round(max * f);
+    svg += `<line x1="${L}" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/>`;
+    svg += `<text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${fmt(v)}</text>`;
+  }
+  days.forEach((d, i) => {
+    const x = L + i * bw + gap / 2;
+    let acc = 0;
+    for (const c of chains) {
+      const v = per.get(d).get(c) || 0;
+      if (!v) continue;
+      svg += `<rect x="${x}" y="${y(acc + v)}" width="${bw - gap}" height="${y(acc) - y(acc + v)}" fill="${color(c)}"><title>${esc(d)} ${esc(c)}: ${fmt(v)}</title></rect>`;
+      acc += v;
+    }
+    const step = Math.ceil(days.length / Math.max(2, Math.floor(W / 90)));
+    const last = i === days.length - 1;
+    // Label every step-th day and the last one, unless they would collide.
+    if (last || (i % step === 0 && days.length - 1 - i >= step / 2))
+      svg += last
+        ? `<text x="${W}" y="${H - 6}" text-anchor="end">${d.slice(5)}</text>`
+        : `<text x="${x + (bw - gap) / 2}" y="${H - 6}" text-anchor="${i === 0 ? "start" : "middle"}">${d.slice(5)}</text>`;
+  });
+  $("chart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="max-width:100%;height:auto;display:block" role="img" aria-label="Requests per day">${svg}</svg>`;
+  $("legend").innerHTML = chains.map((c) => `<span><i style="background:${color(c)}"></i>${esc(c)}</span>`).join("")
+    || '<span class="muted">No requests in this range.</span>';
+}
+
+function showLogin() { $("app").hidden = true; $("login").hidden = false; }
+
+async function start() {
+  if (!authToken()) return showLogin();
+  // Show the page before drawing, so the chart can measure its width.
+  $("login").hidden = true; $("app").hidden = false;
+  try {
+    await load();
+  } catch (e) {
+    if (e.auth) return showLogin();
+    $("err").textContent = e.message;
+  }
+}
+
+$("loginForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  $("err").textContent = "";
+  const res = await fetch("/api/collections/_superusers/auth-with-password", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ identity: f.get("email"), password: f.get("password") }),
+  });
+  if (!res.ok) { $("err").textContent = "Sign-in failed (HTTP " + res.status + ")."; return; }
+  const data = await res.json();
+  try { localStorage.setItem(AUTH_KEY, JSON.stringify({ token: data.token, record: data.record })); } catch {}
+  ev.target.reset();
+  start();
+});
+$("tokens").addEventListener("click", (ev) => {
+  const tr = ev.target.closest("tr[data-id]");
+  if (tr) { state.selected = tr.dataset.id; render(); }
+});
+$("range").addEventListener("change", () => load().catch((e) => ($("err").textContent = e.message)));
+$("refresh").addEventListener("click", () => load().catch((e) => ($("err").textContent = e.message)));
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (!$("app").hidden) render(); }, 150);
+});
+start();
+</script>
+</body>
+</html>

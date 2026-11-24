@@ -26,6 +26,7 @@ import (
 
 	"ganigeorgiev.com/pocketbase/dbx"
 	"ganigeorgiev.com/pocketbase/pocketbase/core"
+	"ganigeorgiev.com/pocketbase/pocketbase/tools/types"
 
 	"rpcgate/internal/gateway"
 )
@@ -363,14 +364,26 @@ func (s *Store) LoadUsage() error {
 	return nil
 }
 
-// Flush adds the pending usage deltas to their rows in one transaction. On
-// failure the deltas go back to be retried at the next flush.
+// Flush adds the pending usage deltas to their rows, and moves tokens'
+// last_used forward, in one transaction. On failure both go back to be
+// retried at the next flush.
 func (s *Store) Flush() error {
 	deltas := s.gw.Usage().Drain()
-	if len(deltas) == 0 {
+	lastUsed := s.gw.Usage().DrainLastUsed()
+	if len(deltas) == 0 && len(lastUsed) == 0 {
 		return nil
 	}
 	err := s.app.RunInTransaction(func(tx core.App) error {
+		// A plain UPDATE, not a record save: saving a token would fire the
+		// hooks that reload every token, and bump its updated time.
+		for id, t := range lastUsed {
+			ts, _ := types.ParseDateTime(t.UTC())
+			_, err := tx.DB().NewQuery("UPDATE {{" + Tokens + "}} SET [[last_used]] = {:t} WHERE [[id]] = {:id} AND ([[last_used]] = '' OR [[last_used]] < {:t})").
+				Bind(dbx.Params{"t": ts.String(), "id": id}).Execute()
+			if err != nil {
+				return err
+			}
+		}
 		col, err := tx.FindCollectionByNameOrId(Usage)
 		if err != nil {
 			return err
@@ -401,6 +414,7 @@ func (s *Store) Flush() error {
 	})
 	if err != nil {
 		s.gw.Usage().Restore(deltas)
+		s.gw.Usage().RestoreLastUsed(lastUsed)
 		return fmt.Errorf("flush usage: %w", err)
 	}
 	return nil

@@ -60,6 +60,7 @@ func Collections() []*core.Collection {
 			Help:                "Leave empty to generate. Clients call /<token>/<chain>. Change it to rotate."},
 		&core.BoolField{Name: "enabled", Help: "Untick to revoke."},
 		&core.RelationField{Name: "profile", Required: true, MaxSelect: 1, CollectionId: profiles.Id},
+		&core.DateField{Name: "last_used", Help: "Its latest request, to within 15 seconds. Set by rpcgate."},
 	)
 	timestamps(tokens)
 	tokens.AddIndex("idx_tokens_name", true, "name", "")

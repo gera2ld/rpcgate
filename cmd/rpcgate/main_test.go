@@ -21,6 +21,7 @@ func TestRoute(t *testing.T) {
 		"/api/health":                         "pb",
 		"/api/collections/tokens/records":     "pb",
 		"/favicon.ico":                        "pb",
+		"/dashboard":                          "pb",
 		"/token/bsc/extra":                    "pb",
 		"/token/":                             "pb",
 		"//bsc":                               "pb",

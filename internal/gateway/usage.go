@@ -3,6 +3,7 @@ package gateway
 import (
 	"sort"
 	"sync"
+	"time"
 )
 
 // UsageKey identifies one usage row: a token's calls to one method on one
@@ -40,13 +41,16 @@ type Usage struct {
 	totals  map[UsageKey]Counts
 	spent   map[budgetKey]int64 // today's requests per token and chain
 	pending map[UsageKey]Counts
+	// lastUsed is each token's latest request since the last DrainLastUsed.
+	lastUsed map[string]time.Time
 }
 
 type budgetKey struct{ tokenID, chain string }
 
 // NewUsage returns empty counters.
 func NewUsage() *Usage {
-	return &Usage{totals: map[UsageKey]Counts{}, spent: map[budgetKey]int64{}, pending: map[UsageKey]Counts{}}
+	return &Usage{totals: map[UsageKey]Counts{}, spent: map[budgetKey]int64{}, pending: map[UsageKey]Counts{},
+		lastUsed: map[string]time.Time{}}
 }
 
 // rollLocked starts a new day's totals when day is newer. Pending deltas keep
@@ -140,6 +144,31 @@ func (u *Usage) Restore(deltas map[UsageKey]Counts) {
 		p := u.pending[k]
 		p.add(d)
 		u.pending[k] = p
+	}
+}
+
+// Touch records that a token made a request at t.
+func (u *Usage) Touch(tokenID string, t time.Time) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if t.After(u.lastUsed[tokenID]) {
+		u.lastUsed[tokenID] = t
+	}
+}
+
+// DrainLastUsed returns and clears each token's latest request time.
+func (u *Usage) DrainLastUsed() map[string]time.Time {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	out := u.lastUsed
+	u.lastUsed = map[string]time.Time{}
+	return out
+}
+
+// RestoreLastUsed puts times back after a failed flush.
+func (u *Usage) RestoreLastUsed(times map[string]time.Time) {
+	for id, t := range times {
+		u.Touch(id, t)
 	}
 }
 

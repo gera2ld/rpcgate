@@ -505,3 +505,45 @@ func TestURLIsWriteOnly(t *testing.T) {
 		t.Fatalf("after rename: %+v", got)
 	}
 }
+
+// last_used moves forward at each flush, without a record save: the token's
+// updated time stays, and an older time never replaces a newer one.
+func TestTokenLastUsed(t *testing.T) {
+	rpc := fakeRPC(t)
+	h := start(t, t.TempDir(), rpcURL(rpc))
+	const secret = "lastused0123456789abcdefghij"
+	tok := h.createToken(t, "indexer", secret, "read-only")
+	idle := h.createToken(t, "idle", "idle0123456789abcdefghijklmn", "read-only")
+	updated := tok.GetString("updated")
+
+	before := time.Now().UTC().Add(-time.Second)
+	h.post(t, secret, "bsc", chainID)
+	if err := h.st.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	tok = h.record(t, Tokens, "id = {:id}", dbx.Params{"id": tok.Id})
+	got := tok.GetDateTime("last_used").Time()
+	if got.Before(before) || got.After(time.Now().Add(time.Second)) {
+		t.Fatalf("last_used = %v", got)
+	}
+	if tok.GetString("updated") != updated {
+		t.Errorf("updated moved: %s -> %s", updated, tok.GetString("updated"))
+	}
+	if idle = h.record(t, Tokens, "id = {:id}", dbx.Params{"id": idle.Id}); !idle.GetDateTime("last_used").IsZero() {
+		t.Errorf("idle token has last_used %v", idle.GetDateTime("last_used"))
+	}
+
+	h.gw.Usage().Touch(tok.Id, got.Add(-time.Hour))
+	if err := h.st.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	tok = h.record(t, Tokens, "id = {:id}", dbx.Params{"id": tok.Id})
+	if !tok.GetDateTime("last_used").Time().Equal(got) {
+		t.Errorf("an older time replaced last_used: %v", tok.GetDateTime("last_used"))
+	}
+	// A rejected call is still a use.
+	h.post(t, secret, "bsc", `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":[]}`)
+	if len(h.gw.Usage().DrainLastUsed()) != 1 {
+		t.Error("a rejected call did not count as a use")
+	}
+}

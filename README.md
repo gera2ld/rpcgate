@@ -24,6 +24,7 @@ Everything is on one port, `RPCGATE_LISTEN` (default `127.0.0.1:8545`,
 |---|---|
 | `/<token>/<chain>` | The proxy, for clients |
 | `/<token>/status` | A token's own status |
+| `/dashboard` | Usage dashboard, for superusers |
 | `/_/` | PocketBase's admin UI |
 | `/api/` | PocketBase's API |
 
@@ -64,6 +65,7 @@ the database, provider keys included.
    | `arbitrum` | `https://rpc.ankr.com/arbitrum/<key>` |
    | `base` | `https://rpc.ankr.com/base/<key>` |
    | `polygon` | `https://rpc.ankr.com/polygon/<key>` |
+   | `avalanche` | `https://rpc.ankr.com/avalanche/<key>` (C-Chain) |
    | `solana` | `https://rpc.ankr.com/solana/<key>` |
    | `ankr` | `https://rpc.ankr.com/multichain/<key>` (the Advanced API) |
 
@@ -81,7 +83,8 @@ chain's expected ID (EVM), and `getGenesisHash` its expected genesis hash
 
 The chains are a fixed list in
 [`internal/gateway/chains.go`](internal/gateway/chains.go): `bsc`, `arbitrum`,
-`base`, `polygon`, `solana` (mainnet) and `ankr` (Ankr's Advanced API). A
+`base`, `polygon`, `avalanche` (C-Chain), `solana` (mainnet) and `ankr`
+(Ankr's Advanced API). A
 chain without an enabled URL is `off`. To add one, add a line there, run
 `just schema`, and rebuild.
 
@@ -153,6 +156,19 @@ It lists only the chains that token can call right now (in its profile, with
 an enabled URL that passed its check), each with the token's full URL for it,
 plus its methods, limits and usage today. Nothing about other tokens.
 
+## Usage dashboard
+
+`http://<server>:8545/dashboard` shows every token with its profile, last use,
+and requests, rejections and upstream errors today and over the last 7, 30 or
+90 days. Pick a token for its requests per day by chain, and a breakdown by
+chain and method. Deleted tokens still show, by their last name.
+
+It is for superusers: it uses your admin UI session (sign in at `/_/` first)
+or its own sign-in form, and reads **tokens** and **usage** through
+PocketBase's API. The page itself carries no data, and it never reads the
+tokens' secrets. Counts reach the database every 15 seconds, so the newest
+calls can take that long to appear.
+
 ## Collections
 
 The admin UI is the access-control screen. Change **records** there, never
@@ -175,7 +191,8 @@ the token gets the difference; lower it below the count and the token stops
 until midnight UTC. To give a token a fresh start today, delete its rows for
 today in **usage** and restart rpcgate.
 
-**tokens**: `name`, `token`, `enabled`, `profile`.
+**tokens**: `name`, `token`, `enabled`, `profile`, `last_used` (set by
+rpcgate at each usage flush, so to within 15 seconds; rejected calls count).
 
 **usage**: daily totals per token, chain and method (UTC days): `requests`
 (forwarded; these spend the budget), `rejections`, `upstream_errors`. Methods a

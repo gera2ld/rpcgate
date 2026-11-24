@@ -257,7 +257,7 @@ func TestWriteStatus(t *testing.T) {
 		[]Profile{{Name: "read-only", Chains: []string{"bsc", "solana"}, DailyBudget: 100, Methods: []string{"eth_*", "get*"}}}, 2)
 	out := b.String()
 	for _, want := range []string{
-		"rpcgate on http://0.0.0.0:8545: proxy at /<token>/<chain>, admin UI at /_/",
+		"rpcgate on http://0.0.0.0:8545: proxy at /<token>/<chain>, usage at /dashboard, admin UI at /_/",
 		"bsc", "ready", "my-node", "arbitrum", "failed", "arbitrum: upstream is chain 56, expected 42161",
 		"solana", solanaGenesis, "optimism", "add an enabled URL for it",
 		"  bsc       my-node  yes      yes\n", "  bsc       old-key  no       \n", "  arbitrum  ankr     yes      yes\n",
