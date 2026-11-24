@@ -19,6 +19,16 @@ var Chains = []Chain{
 	{Name: "helius", Family: Helius, GenesisHash: SolanaMainnetGenesis},
 }
 
+// ChainByName returns the chain called name.
+func ChainByName(name string) (Chain, bool) {
+	for _, c := range Chains {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return Chain{}, false
+}
+
 // ChainNames lists the names of Chains.
 func ChainNames() []string {
 	names := make([]string, len(Chains))

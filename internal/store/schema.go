@@ -28,29 +28,16 @@ func Collections() []*core.Collection {
 	urls.Fields.Add(
 		&core.SelectField{Name: "chain", Required: true, MaxSelect: 1, Values: chainNames},
 		&core.TextField{Name: "name", Required: true, Max: 32, Presentable: true,
-			Help: "e.g. ankr. Logs and the status table show this, never the URL."},
+			Help: "e.g. ankr-fe. Tokens pick URLs by this; logs, status and usage show it, never the URL."},
 		// Hidden, and also hidden from superusers by a hook: write-only.
 		&core.TextField{Name: "url", Required: true, Max: 2048, Hidden: true,
 			Help: "Write-only: never shown after saving; leave empty when editing to keep it. " +
 				"This chain's RPC URL with the key, used as it is, e.g. https://rpc.ankr.com/bsc/<key>. " +
 				"For ankr (the Advanced API): https://rpc.ankr.com/multichain/<key>. " +
 				"For helius: https://mainnet.helius-rpc.com/?api-key=<key>."},
-		&core.BoolField{Name: "enabled", Help: "A chain uses its first enabled URL (oldest first). Untick to switch without deleting."},
+		&core.BoolField{Name: "enabled", Help: "A token uses the first enabled one of its URLs for a chain (oldest first). Untick to switch without deleting."},
 	)
 	timestamps(urls)
-
-	profiles := core.NewBaseCollection("profiles", "rg_profiles")
-	profiles.Fields.Add(
-		&core.TextField{Name: "name", Required: true, Max: 64, Presentable: true},
-		&core.SelectField{Name: "chains", MaxSelect: len(chainNames), Values: chainNames,
-			Help: "Chains tokens with this profile may call."},
-		&core.JSONField{Name: "methods", MaxSize: 64 << 10,
-			Help: `JSON array of method patterns; * matches anything, e.g. ["*"] or ["eth_*", "getProgramAccounts"]. Empty: each family's read-only defaults.`},
-		num("daily_budget", "Requests per token per chain per UTC day; 0 = unlimited."),
-		num("max_batch", "Items per JSON-RPC batch; 0 = 50."),
-	)
-	timestamps(profiles)
-	profiles.AddIndex("idx_profiles_name", true, "name", "")
 
 	tokens := core.NewBaseCollection("tokens", "rg_tokens")
 	tokens.Fields.Add(
@@ -60,7 +47,13 @@ func Collections() []*core.Collection {
 			AutogeneratePattern: "[a-zA-Z0-9]{40}",
 			Help:                "Leave empty to generate. Clients call /<token>/<chain>. Change it to rotate."},
 		&core.BoolField{Name: "enabled", Help: "Untick to revoke."},
-		&core.RelationField{Name: "profile", Required: true, MaxSelect: 1, CollectionId: profiles.Id},
+		// Not required: a token without URLs simply has no chains, and a
+		// required relation would block deleting a URL that tokens use.
+		&core.RelationField{Name: "urls", MaxSelect: 999, CollectionId: urls.Id,
+			Help: "The upstream URLs this token uses; they also decide its chains. Per chain, the first enabled one (oldest first) is used."},
+		&core.JSONField{Name: "methods", MaxSize: 64 << 10,
+			Help: `JSON array of method patterns; * matches anything, e.g. ["*"] or ["eth_*", "getProgramAccounts"]. Empty: each chain's read-only defaults.`},
+		num("daily_budget", "Requests per chain per UTC day; 0 = 200000."),
 		&core.DateField{Name: "last_used", Help: "Its latest request, to within 15 seconds. Set by rpcgate."},
 	)
 	timestamps(tokens)
@@ -73,15 +66,16 @@ func Collections() []*core.Collection {
 		&core.TextField{Name: "token_id", Required: true, Max: 32},
 		&core.TextField{Name: "token_name", Max: 64, Presentable: true},
 		&core.TextField{Name: "chain", Required: true, Max: 32},
+		&core.TextField{Name: "url", Max: 32, Help: "The name of the URL that served it."},
 		&core.TextField{Name: "method", Required: true, Max: 128},
 		num("requests", "Items forwarded upstream; these spend the daily budget."),
 		num("rejections", "Items the gateway refused."),
 		num("upstream_errors", "Forwarded items whose upstream call failed."),
 	)
 	timestamps(usage)
-	usage.AddIndex("idx_usage_key", true, "day, token_id, chain, method", "")
+	usage.AddIndex("idx_usage_key", true, "day, token_id, chain, url, method", "")
 
-	return []*core.Collection{urls, profiles, tokens, usage}
+	return []*core.Collection{urls, tokens, usage}
 }
 
 // MarshalSnapshot renders collections as collections.json does.

@@ -72,7 +72,7 @@ svg text { fill: var(--muted); font-size: 11px; }
       <h2>Tokens</h2>
       <table>
         <thead><tr>
-          <th>Token</th><th>Profile</th><th>Last used</th>
+          <th>Token</th><th>URLs</th><th class="n">Budget/day</th><th>Last used</th>
           <th class="n">Today</th><th class="n">Requests</th><th class="n">Rejected</th><th class="n">Errors</th>
         </tr></thead>
         <tbody id="tokens"></tbody>
@@ -87,9 +87,9 @@ svg text { fill: var(--muted); font-size: 11px; }
     </div>
 
     <div class="panel" id="methodsPanel" hidden>
-      <h2>By chain and method</h2>
+      <h2>By chain, URL and method</h2>
       <table>
-        <thead><tr><th>Chain</th><th>Method</th><th class="n">Requests</th><th class="n">Rejected</th><th class="n">Errors</th></tr></thead>
+        <thead><tr><th>Chain</th><th>URL</th><th>Method</th><th class="n">Requests</th><th class="n">Rejected</th><th class="n">Errors</th></tr></thead>
         <tbody id="methods"></tbody>
       </table>
     </div>
@@ -151,9 +151,9 @@ async function load() {
   state.days = dayList(n);
   const [tokens, rows] = await Promise.all([
     // Never ask for the token field: the dashboard has no use for secrets.
-    listAll("tokens", { fields: "id,name,enabled,last_used,expand.profile.name", expand: "profile", sort: "name" }),
+    listAll("tokens", { fields: "id,name,enabled,last_used,daily_budget,expand.urls.name", expand: "urls", sort: "name" }),
     listAll("usage", {
-      fields: "day,token_id,token_name,chain,method,requests,rejections,upstream_errors",
+      fields: "day,token_id,token_name,chain,url,method,requests,rejections,upstream_errors",
       filter: `day >= "${state.days[0]}"`,
     }),
   ]);
@@ -183,14 +183,15 @@ function render() {
     const tags = t.deleted ? ' <span class="tag">deleted</span>' : t.enabled ? "" : ' <span class="tag">disabled</span>';
     return `<tr class="pick${t.id === state.selected ? " on" : ""}" data-id="${esc(t.id)}">
       <td>${esc(t.name)}${tags}</td>
-      <td>${esc(t.expand?.profile?.name || "")}</td>
+      <td>${esc((t.expand?.urls || []).map((u) => u.name).join(", "))}</td>
+      <td class="n">${t.deleted ? "" : fmt(t.daily_budget || 200000)}</td>
       <td>${t.deleted ? "" : ago(t.last_used)}</td>
       <td class="n">${fmt(now.requests)}</td>
       <td class="n">${fmt(all.requests)}</td>
       <td class="n${all.rejections ? " bad" : ""}">${fmt(all.rejections)}</td>
       <td class="n${all.upstream_errors ? " bad" : ""}">${fmt(all.upstream_errors)}</td>
     </tr>`;
-  }).join("") || '<tr><td colspan="7" class="muted">No tokens yet.</td></tr>';
+  }).join("") || '<tr><td colspan="8" class="muted">No tokens yet.</td></tr>';
 
   const sel = list.find((t) => t.id === state.selected);
   $("detail").hidden = $("methodsPanel").hidden = !sel;
@@ -201,18 +202,18 @@ function render() {
 
   const byMethod = new Map();
   for (const r of mine) {
-    const k = r.chain + "\u0000" + r.method;
-    const s = byMethod.get(k) || { chain: r.chain, method: r.method, requests: 0, rejections: 0, upstream_errors: 0 };
+    const k = r.chain + "\u0000" + r.url + "\u0000" + r.method;
+    const s = byMethod.get(k) || { chain: r.chain, url: r.url, method: r.method, requests: 0, rejections: 0, upstream_errors: 0 };
     s.requests += r.requests; s.rejections += r.rejections; s.upstream_errors += r.upstream_errors;
     byMethod.set(k, s);
   }
   const methods = [...byMethod.values()].sort((a, b) => b.requests - a.requests || b.rejections - a.rejections);
   $("methods").innerHTML = methods.map((m) => `<tr>
-      <td>${esc(m.chain)}</td><td>${esc(m.method)}</td>
+      <td>${esc(m.chain)}</td><td>${esc(m.url || "")}</td><td>${esc(m.method)}</td>
       <td class="n">${fmt(m.requests)}</td>
       <td class="n${m.rejections ? " bad" : ""}">${fmt(m.rejections)}</td>
       <td class="n${m.upstream_errors ? " bad" : ""}">${fmt(m.upstream_errors)}</td>
-    </tr>`).join("") || '<tr><td colspan="5" class="muted">No calls in this range.</td></tr>';
+    </tr>`).join("") || '<tr><td colspan="6" class="muted">No calls in this range.</td></tr>';
 }
 
 function renderChart(rows) {

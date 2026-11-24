@@ -13,6 +13,7 @@ type UsageKey struct {
 	TokenID   string
 	TokenName string
 	Chain     string
+	URL       string // the name of the URL that served it
 	Method    string
 }
 
@@ -113,15 +114,15 @@ func (u *Usage) Spent(day, tokenID, chain string) int64 {
 
 // trySpend records one request per method if the budget allows them all, and
 // reports whether it did. budget 0 is unlimited.
-func (u *Usage) trySpend(day string, tok *tokenEntry, chain string, methods []string, budget int) bool {
+func (u *Usage) trySpend(day, tokenID, chain string, keys []UsageKey, budget int) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.rollLocked(day)
-	if budget > 0 && u.spent[budgetKey{tok.id, chain}]+int64(len(methods)) > int64(budget) {
+	if budget > 0 && u.spent[budgetKey{tokenID, chain}]+int64(len(keys)) > int64(budget) {
 		return false
 	}
-	for _, m := range methods {
-		u.addLocked(UsageKey{Day: day, TokenID: tok.id, TokenName: tok.name, Chain: chain, Method: m}, Counts{Requests: 1})
+	for _, k := range keys {
+		u.addLocked(k, Counts{Requests: 1})
 	}
 	return true
 }
@@ -175,6 +176,7 @@ func (u *Usage) RestoreLastUsed(times map[string]time.Time) {
 // MethodUsage is one method's totals for today.
 type MethodUsage struct {
 	Chain  string `json:"chain"`
+	URL    string `json:"url"`
 	Method string `json:"method"`
 	Counts
 }
@@ -190,12 +192,15 @@ func (u *Usage) Today(day, tokenID string) []MethodUsage {
 	}
 	for k, c := range u.totals {
 		if k.TokenID == tokenID {
-			out = append(out, MethodUsage{Chain: k.Chain, Method: k.Method, Counts: c})
+			out = append(out, MethodUsage{Chain: k.Chain, URL: k.URL, Method: k.Method, Counts: c})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Chain != out[j].Chain {
 			return out[i].Chain < out[j].Chain
+		}
+		if out[i].URL != out[j].URL {
+			return out[i].URL < out[j].URL
 		}
 		return out[i].Method < out[j].Method
 	})

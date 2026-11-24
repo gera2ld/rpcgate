@@ -25,14 +25,13 @@ type Chain struct {
 	ChainID uint64
 	// GenesisHash is the expected getGenesisHash result (Solana).
 	GenesisHash string
-	// Endpoint names the URL serving this chain, such as ankr; "" means none.
-	Endpoint string
 }
 
 // Endpoint is one saved upstream URL, used as it is. URL holds the key and
-// is the secret;
-// Name (such as ankr) is what logs and status show instead.
+// is the secret; Name (such as ankr-fe) is what logs and status show
+// instead, and ID is its record ID, which tokens refer to.
 type Endpoint struct {
+	ID   string
 	Name string
 	URL  string
 }
@@ -58,11 +57,12 @@ func (c Chain) Validate() error {
 	return nil
 }
 
-// Upstream is one chain's upstream. Source names the URL in use ("" when
-// none); status output and errors use Source, never the URL. Err is why the
-// chain is not served, and Ready reports that it passed its check.
+// Upstream is one saved URL serving one chain. ID is the URL's record ID;
+// Source is its name, which status output and errors use, never the URL.
+// Err is why it is not served, and Ready reports that it passed its check.
 type Upstream struct {
 	Chain  Chain
+	ID     string
 	Source string
 	Ready  bool
 	Err    error
@@ -73,8 +73,8 @@ type Upstream struct {
 	timeout time.Duration
 }
 
-// ResolveUpstream builds chain c's upstream from endpoint e (nil when the
-// chain has none). Errors name the endpoint, never its URL.
+// ResolveUpstream builds chain c's upstream from endpoint e. Errors name the
+// endpoint, never its URL.
 func ResolveUpstream(c Chain, e *Endpoint, client *http.Client, timeout time.Duration) *Upstream {
 	up := &Upstream{Chain: c, timeout: timeout}
 	if timeout <= 0 {
@@ -89,6 +89,9 @@ func ResolveUpstream(c Chain, e *Endpoint, client *http.Client, timeout time.Dur
 	cl.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	up.client = &cl
 
+	if e != nil {
+		up.ID, up.Source = e.ID, e.Name
+	}
 	if err := c.Validate(); err != nil {
 		up.Err = err
 		return up
@@ -96,7 +99,6 @@ func ResolveUpstream(c Chain, e *Endpoint, client *http.Client, timeout time.Dur
 	if e == nil || strings.TrimSpace(e.URL) == "" {
 		return up // not configured
 	}
-	up.Source = e.Name
 	u, err := url.Parse(strings.TrimSpace(e.URL))
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		// Do not echo the value: it is the secret.

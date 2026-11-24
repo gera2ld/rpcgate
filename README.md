@@ -10,10 +10,10 @@ its own URL with a token:
 http://<server>:8545/<token>/<chain>        e.g. https://rpc.example.com/Xk3…9q/bsc
 ```
 
-Each token has a profile with a method allowlist, a batch cap and a daily
-budget. rpcgate follows no redirects and scrubs upstream URLs from everything
-it returns. You manage RPC URLs, profiles and tokens in a PocketBase admin
-UI.
+Each token picks the upstream URLs (and so the keys) it uses, and has a
+method allowlist and a daily budget. rpcgate follows no redirects and scrubs
+upstream URLs from everything it returns. You manage RPC URLs and tokens in a
+PocketBase admin UI.
 
 ## One port
 
@@ -55,9 +55,10 @@ the database, provider keys included.
    docker compose exec rpcgate /rpcgate superuser upsert you@example.com '<password>'
    ```
 
-4. In the admin UI at `http://<server>:8545/_/`, open **urls** and add one
-   record per chain: pick the **chain**, give it a **name** such as `ankr`,
-   paste the URL with your key, tick **enabled**, and save. With Ankr:
+4. In the admin UI at `http://<server>:8545/_/`, open **urls** and add a
+   record per chain and key: pick the **chain**, give it a **name** such as
+   `ankr-be`, paste the URL with your key, tick **enabled**, and save. With
+   Ankr:
 
    | chain | url |
    |---|---|
@@ -70,28 +71,27 @@ the database, provider keys included.
    | `ankr` | `https://rpc.ankr.com/multichain/<key>` (the Advanced API) |
    | `helius` | `https://mainnet.helius-rpc.com/?api-key=<key>` (from Helius) |
 
-   The chains reload at once, without a restart.
+   URLs reload at once, without a restart. Then create tokens and select
+   their URLs; see [Creating a token](#creating-a-token).
 
-5. Check the result: `docker compose logs rpcgate`. On startup it prints a
-   table of the chains with their state (`ready`, `failed` with the reason,
-   `off`) and the URL in use, by name; the saved URLs by name;
-   and each profile's limits. It never prints a URL or a token. Later
-   reloads log one line per chain, such as `chain bsc ready (ankr)`.
+5. Check the result: `docker compose logs rpcgate`. On startup it prints
+   each saved URL by name with its state (`ready`, `failed` with the reason,
+   `disabled`), then each token with its budget, methods, and the URL it uses
+   for each chain. It never prints a URL or a token. Later reloads log one
+   line per URL, such as `URL ankr-be (bsc) ready`.
 
-Every chain must pass a check before it is served: `eth_chainId` must match the
-chain's expected ID (EVM), and `getGenesisHash` its expected genesis hash
-(Solana). A URL for the wrong chain, or a bad key, shows up as `failed`.
+Every enabled URL must pass a check before it is served: `eth_chainId` must
+match the chain's expected ID (EVM), and `getGenesisHash` its expected genesis
+hash (Solana, Helius). A URL for the wrong chain, or a bad key, shows up as
+`failed`.
 
 The chains are a fixed list in
 [`internal/gateway/chains.go`](internal/gateway/chains.go): `bsc`, `arbitrum`,
 `base`, `polygon`, `avalanche` (C-Chain), `solana` (mainnet), `ankr`
 (Ankr's Advanced API) and `helius` (Helius's Solana RPC with its own
-methods). A chain without an enabled URL is `off`. To add one, add a line there, run
-`just schema`, and rebuild.
+methods). To add one, add a line there, run `just schema`, and rebuild.
 
-The first start creates a `read-only` profile allowing every chain, with a
-budget of 200,000 requests per token per chain per day. It creates no URLs and
-no tokens.
+rpcgate creates no URLs or tokens itself.
 
 The image is Alpine, running as `nobody`, so a shell is there for debugging:
 `docker compose exec rpcgate sh`.
@@ -101,10 +101,17 @@ To run it without Docker: `just run` (data goes to `./pb_data`).
 ## URLs
 
 Each record in **urls** is one chain's RPC URL with its key, used exactly as
-saved, plus a name such as `ankr` (logs and status show the name, never the
-URL) and an **enabled** toggle. A chain uses its **first enabled URL**, oldest
-first. Keep as many per chain as you like (a second key, your own node) and
-switch by ticking **enabled**; nothing needs deleting.
+saved, plus a name such as `ankr-fe` (logs, status and usage show the name,
+never the URL) and an **enabled** toggle. Keep as many per chain as you like:
+a key per project, a spare key, your own node.
+
+Tokens choose among them. For each chain, a token uses the **first enabled**
+URL among those it selected, oldest first, so you can switch a token by
+ticking **enabled** without deleting anything. If that URL fails its check,
+the chain is unavailable to the token: it never falls back to another URL,
+and never to one it did not select, so one project never spends another's
+key. For example, give `frontend` the URLs `ankr-fe-bsc` and
+`ankr-fe-solana`, and `backend` the URLs `ankr-be-bsc` and `helius-be`.
 
 The URL is **write-only**. Once saved, it is never returned by the API or
 shown in the admin UI, to superusers too. When you edit a record, leave
@@ -149,7 +156,7 @@ curl http://<server>:8545/<token>/helius -H 'content-type: application/json' \
 Only JSON-RPC is proxied: Helius's REST APIs (`api.helius.xyz/v0/...`, such as
 Enhanced Transactions and webhooks) are not. Helius charges more credits for
 some of these methods than for plain calls, while the daily budget counts
-calls, so give profiles that use `helius` a budget to match.
+calls, so give tokens that use `helius` a budget to match.
 
 ## Creating a token
 
@@ -160,7 +167,12 @@ In the admin UI, open **tokens** → **New record**:
 - **token**: leave it empty; PocketBase generates a 40-character token when
   you save.
 - **enabled**: tick it.
-- **profile**: pick one, such as `read-only`.
+- **urls**: the URLs it uses. These also decide its chains: it can call a
+  chain only if one of them serves it.
+- **methods**: leave empty for the read-only defaults, or see
+  [Methods](#methods).
+- **daily_budget**: requests per chain per UTC day. Leave it 0 for the
+  default, 200,000.
 
 Save, copy the token, and give the client its URL:
 
@@ -177,16 +189,17 @@ A client can check what it may use and how much it has used today:
 curl http://<server>:8545/<token>/status
 ```
 
-It lists only the chains that token can call right now (in its profile, with
-an enabled URL that passed its check), each with the token's full URL for it,
-plus its methods, limits and usage today. Nothing about other tokens.
+It lists only the chains that token can call right now (with an enabled URL
+of its own that passed its check), each with the token's full URL for it and
+the name of the upstream URL it goes through, plus its methods, limits and
+usage today. Nothing about other tokens.
 
 ## Usage dashboard
 
-`http://<server>:8545/dashboard` shows every token with its profile, last use,
-and requests, rejections and upstream errors today and over the last 7, 30 or
-90 days. Pick a token for its requests per day by chain, and a breakdown by
-chain and method. Deleted tokens still show, by their last name.
+`http://<server>:8545/dashboard` shows every token with its URLs, budget, last
+use, and requests, rejections and upstream errors today and over the last 7,
+30 or 90 days. Pick a token for its requests per day by chain, and a breakdown
+by chain, URL and method, which shows whose key each call spent. Deleted tokens still show, by their last name.
 
 It is for superusers: it uses your admin UI session (sign in at `/_/` first)
 or its own sign-in form, and reads **tokens** and **usage** through
@@ -208,25 +221,25 @@ All the collections are superuser-only: none has an API rule.
 **urls**: `chain` (a select of the fixed chains), `name`, `url`
 (write-only), `enabled`. See [URLs](#urls).
 
-**profiles**: `chains` (a multi-select), `methods` (a JSON array of method
-patterns; see [Methods](#methods)), `daily_budget` (0 = unlimited),
-`max_batch` (0 = 50). The budget applies per token per chain per UTC day,
-and counts each item in a batch. Editing it keeps today's count: raise it and
-the token gets the difference; lower it below the count and the token stops
-until midnight UTC. To give a token a fresh start today, delete its rows for
-today in **usage** and restart rpcgate.
+**tokens**: `name`, `token`, `enabled`, `urls` (see [URLs](#urls)),
+`methods` (a JSON array of method patterns; see [Methods](#methods)),
+`daily_budget` (0 = 200,000), `last_used` (set by rpcgate at each usage
+flush, so to within 15 seconds; rejected calls count). The budget applies per
+chain per UTC day, and counts each item in a batch; a batch holds at most 50.
+Editing the budget keeps today's count: raise it and the token gets the
+difference; lower it below the count and the token stops until midnight UTC.
+To give a token a fresh start today, delete its rows for today in **usage**
+and restart rpcgate.
 
-**tokens**: `name`, `token`, `enabled`, `profile`, `last_used` (set by
-rpcgate at each usage flush, so to within 15 seconds; rejected calls count).
-
-**usage**: daily totals per token, chain and method (UTC days): `requests`
+**usage**: daily totals per token, chain, URL (by name) and method (UTC
+days): `requests`
 (forwarded; these spend the budget), `rejections`, `upstream_errors`. Methods a
 token may not call, and names that don't look like a method, are counted as
 `(other)`.
 
 ## Methods
 
-A profile's **methods** is a JSON array of patterns, where `*` matches
+A token's **methods** is a JSON array of patterns, where `*` matches
 anything:
 
 - `["*"]`: every method.
@@ -265,8 +278,8 @@ unknown, disabled or revoked token always gets the same `-32001 unauthorized`
 
 ## How it runs
 
-PocketBase stays off the request path. At startup rpcgate loads chains,
-URLs, profiles and tokens into memory, and record hooks reload them when you save in
+PocketBase stays off the request path. At startup rpcgate loads URLs
+and tokens into memory, and record hooks reload them when you save in
 the admin UI. Usage is counted in memory and flushed to `usage` every 15
 seconds and on shutdown. Today's
 totals are read back at startup, so daily budgets survive restarts. A crash
@@ -290,9 +303,9 @@ image; keep it on a volume) and `RPCGATE_QUIET=1` (stop logging each request).
   a superuser can download) can read the keys. Protect them like the keys
   themselves.
 - **Tokens are safe to share with internal clients and LLMs.** A token is
-  revocable at once, limited by its profile (chains, methods,
-  daily budget and batch cap), and only works from your internal
-  network. A leaked token can spend at most its profile's budget before you
+  revocable at once, limited to its own URLs, methods, daily budget and
+  batch cap, and only works from your internal network. A leaked token can
+  spend at most its budget, on its own keys, before you
   revoke it, and it reveals nothing about the provider keys. Paste gateway
   URLs into configuration, chats and coding assistants as you like. Give each
   client its own token, so you can revoke one without touching the others.

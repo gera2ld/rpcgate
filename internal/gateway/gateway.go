@@ -2,12 +2,14 @@
 // usually embed an API key) inside the process, and limits what each client
 // token can spend through it.
 //
-// Clients call /<token>/<chain>. The gateway forwards only the methods the
-// token's profile allows, caps batch sizes, each token on each chain, enforces a daily budget, and never
-// returns an upstream URL in a response, status page or log line.
+// Clients call /<token>/<chain>. Each token names the upstream URLs it may
+// use, and a call goes to the first enabled one of them for that chain. The
+// gateway forwards only the methods the token allows, caps batch sizes,
+// enforces a daily budget per token and chain, and never returns an upstream
+// URL in a response, status page or log line.
 //
-// The gateway has no storage of its own: callers give it tokens and chains
-// with SetTokens and SetChains, seed today's usage with Usage().Seed, and
+// The gateway has no storage of its own: callers give it tokens and URLs
+// with SetTokens and SetUpstreams, seed today's usage with Usage().Seed, and
 // persist Usage().Drain.
 package gateway
 
@@ -17,7 +19,7 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -37,7 +39,7 @@ type Options struct {
 type Gateway struct {
 	opts   Options
 	access atomic.Pointer[access]
-	chains atomic.Pointer[map[string]*Upstream]
+	ups    atomic.Pointer[[]*Upstream] // enabled URLs, oldest first
 	usage  *Usage
 }
 
@@ -51,8 +53,7 @@ func New(opts Options) *Gateway {
 	}
 	g := &Gateway{opts: opts, usage: NewUsage()}
 	g.access.Store(newAccess(nil))
-	empty := map[string]*Upstream{}
-	g.chains.Store(&empty)
+	g.ups.Store(&[]*Upstream{})
 	return g
 }
 
@@ -60,35 +61,36 @@ func New(opts Options) *Gateway {
 func (g *Gateway) Usage() *Usage { return g.usage }
 
 // SetTokens replaces the enabled tokens. Tokens shorter than MinTokenLength
-// or without a profile are ignored.
+// are ignored.
 func (g *Gateway) SetTokens(tokens []Token) { g.access.Store(newAccess(tokens)) }
 
-// SetChains replaces the chains. Only Ready upstreams are served.
-func (g *Gateway) SetChains(ups []*Upstream) {
-	m := make(map[string]*Upstream, len(ups))
-	for _, u := range ups {
-		m[u.Chain.Name] = u
-	}
-	g.chains.Store(&m)
+// SetUpstreams replaces the enabled URLs, oldest first: a token uses the
+// first of its URLs for a chain. Only Ready ones are served.
+func (g *Gateway) SetUpstreams(ups []*Upstream) {
+	cp := slices.Clone(ups)
+	g.ups.Store(&cp)
 }
 
-// Chains returns the current upstreams, sorted by name.
-func (g *Gateway) Chains() []*Upstream {
-	m := *g.chains.Load()
-	out := make([]*Upstream, 0, len(m))
-	for _, u := range m {
-		out = append(out, u)
+// Upstreams returns the enabled URLs, oldest first.
+func (g *Gateway) Upstreams() []*Upstream { return slices.Clone(*g.ups.Load()) }
+
+// routeFor returns the upstream tok uses for chain: the first enabled URL
+// among tok's that serves it, ready or not, or nil when tok has none.
+func (g *Gateway) routeFor(tok *tokenEntry, chain string) *Upstream {
+	for _, u := range *g.ups.Load() {
+		if tok.urls[u.ID] && u.Chain.Name == chain {
+			return u
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Chain.Name < out[j].Chain.Name })
-	return out
+	return nil
 }
 
 func (g *Gateway) day() string { return g.opts.Now().UTC().Format("2006-01-02") }
 
-// scrub removes every upstream's secrets, not only the one that answered: an
-// Ankr key is shared by all chains derived from it.
+// scrub removes every upstream's secrets, not only the one that answered: a
+// key is often shared by several URLs.
 func (g *Gateway) scrub(s string) string {
-	for _, u := range *g.chains.Load() {
+	for _, u := range *g.ups.Load() {
 		s = u.scrub(s)
 	}
 	return s
@@ -127,8 +129,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.serveStatus(w, r, tok)
 		return
 	}
-	up := (*g.chains.Load())[parts[1]]
-	if up == nil || !up.Ready || !tok.profile.AllowsChain(up.Chain.Name) {
+	up := g.routeFor(tok, parts[1])
+	if up == nil || !up.Ready {
 		writeError(w, http.StatusNotFound, nil, codeInvalid,
 			"chain not available to this token; available: "+strings.Join(g.tokenChains(tok), ", "))
 		return
@@ -144,12 +146,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.serveRPC(w, r, tok, up)
 }
 
-// tokenChains lists the ready chains tok may use.
+// tokenChains lists the chains tok can call: those whose URL for tok is
+// ready.
 func (g *Gateway) tokenChains(tok *tokenEntry) []string {
 	var out []string
-	for _, u := range g.Chains() {
-		if u.Ready && tok.profile.AllowsChain(u.Chain.Name) {
-			out = append(out, u.Chain.Name)
+	for _, c := range Chains {
+		if u := g.routeFor(tok, c.Name); u != nil && u.Ready {
+			out = append(out, c.Name)
 		}
 	}
 	if len(out) == 0 {
@@ -164,14 +167,14 @@ func (g *Gateway) serveRPC(w http.ResponseWriter, r *http.Request, tok *tokenEnt
 	prefix := tok.name + " " + chainName
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.opts.MaxBodyBytes))
 	if err != nil {
-		g.countReject(tok, chainName, []request{{}})
+		g.countReject(tok, up, []request{{}})
 		writeError(w, http.StatusRequestEntityTooLarge, nil, codeInvalid, "request body too large")
 		return
 	}
-	reqs, batch, msg, code := parseBody(body, tok.profile.MaxBatch)
+	reqs, batch, msg, code := parseBody(body, MaxBatch)
 	if msg != "" {
 		g.tlogf(tok, "%s reject: %s", prefix, msg)
-		g.countReject(tok, chainName, []request{{}})
+		g.countReject(tok, up, []request{{}})
 		writeError(w, http.StatusOK, nil, code, msg)
 		return
 	}
@@ -180,14 +183,14 @@ func (g *Gateway) serveRPC(w http.ResponseWriter, r *http.Request, tok *tokenEnt
 	for _, req := range reqs {
 		if msg, code := g.check(tok, up, req); msg != "" {
 			g.tlogf(tok, "%s reject %s: %s", prefix, safeMethod(req.Method), msg)
-			g.countReject(tok, chainName, reqs)
+			g.countReject(tok, up, reqs)
 			reject(w, http.StatusOK, reqs, batch, code, msg)
 			return
 		}
 	}
-	if msg := g.spend(tok, chainName, usageMethods(tok, up, reqs)); msg != "" {
+	if msg := g.spend(tok, up, usageMethods(tok, up, reqs)); msg != "" {
 		g.tlogf(tok, "%s reject %s: %s", prefix, methodList(reqs), msg)
-		g.countReject(tok, chainName, reqs)
+		g.countReject(tok, up, reqs)
 		reject(w, http.StatusTooManyRequests, reqs, batch, codeLimit, msg)
 		return
 	}
@@ -223,30 +226,22 @@ func usageMethods(tok *tokenEntry, up *Upstream, reqs []request) []string {
 	return out
 }
 
-func (g *Gateway) countReject(tok *tokenEntry, chain string, reqs []request) {
-	up := (*g.chains.Load())[chain]
+func (g *Gateway) countReject(tok *tokenEntry, up *Upstream, reqs []request) {
 	day := g.day()
-	for _, m := range methodsOrOther(tok, up, reqs) {
-		g.usage.Add(UsageKey{Day: day, TokenID: tok.id, TokenName: tok.name, Chain: chain, Method: m}, Counts{Rejections: 1})
+	for _, m := range usageMethods(tok, up, reqs) {
+		g.usage.Add(usageKey(day, tok, up, m), Counts{Rejections: 1})
 	}
-}
-
-func methodsOrOther(tok *tokenEntry, up *Upstream, reqs []request) []string {
-	if up == nil {
-		out := make([]string, len(reqs))
-		for i := range out {
-			out[i] = OtherMethod
-		}
-		return out
-	}
-	return usageMethods(tok, up, reqs)
 }
 
 func (g *Gateway) countUpstreamErrors(tok *tokenEntry, up *Upstream, reqs []request) {
 	day := g.day()
 	for _, m := range usageMethods(tok, up, reqs) {
-		g.usage.Add(UsageKey{Day: day, TokenID: tok.id, TokenName: tok.name, Chain: up.Chain.Name, Method: m}, Counts{UpstreamErrors: 1})
+		g.usage.Add(usageKey(day, tok, up, m), Counts{UpstreamErrors: 1})
 	}
+}
+
+func usageKey(day string, tok *tokenEntry, up *Upstream, method string) UsageKey {
+	return UsageKey{Day: day, TokenID: tok.id, TokenName: tok.name, Chain: up.Chain.Name, URL: up.Source, Method: method}
 }
 
 // check returns a rejection message and code, or "" when req may be forwarded.
@@ -260,10 +255,14 @@ func (g *Gateway) check(tok *tokenEntry, up *Upstream, req request) (string, int
 // spend takes one request per method from the token's daily budget on this
 // chain. It returns a rejection message, worded so clients with an adaptive
 // log range read it as a reason to back off.
-func (g *Gateway) spend(tok *tokenEntry, chain string, methods []string) string {
-	budget := tok.profile.DailyBudget
-	if !g.usage.trySpend(g.day(), tok, chain, methods, budget) {
-		return fmt.Sprintf("daily quota of %d requests used up (resets 00:00 UTC)", budget)
+func (g *Gateway) spend(tok *tokenEntry, up *Upstream, methods []string) string {
+	keys := make([]UsageKey, len(methods))
+	day := g.day()
+	for i, m := range methods {
+		keys[i] = usageKey(day, tok, up, m)
+	}
+	if !g.usage.trySpend(day, tok.id, up.Chain.Name, keys, tok.budget) {
+		return fmt.Sprintf("daily quota of %d requests used up (resets 00:00 UTC)", tok.budget)
 	}
 	return ""
 }

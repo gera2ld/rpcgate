@@ -14,10 +14,10 @@ import (
 
 // URLInfo is what the status table shows of a saved URL: never the URL.
 type URLInfo struct {
+	ID      string
 	Name    string
 	Chain   string
 	Enabled bool
-	InUse   bool
 }
 
 func expected(c Chain) string {
@@ -30,95 +30,89 @@ func expected(c Chain) string {
 	return strconv.FormatUint(c.ChainID, 10)
 }
 
-// WriteStatus prints which chains are served, by which URL, why any are not,
-// the saved URLs by name, and each profile's limits. It never prints a URL
-// or a token.
-func WriteStatus(w io.Writer, listen string, ups []*Upstream, urls []URLInfo, profiles []Profile, tokens int) {
+// WriteStatus prints each saved URL's state, then each token's chains and
+// the URL each one uses, by name. It never prints a URL or a token.
+func (g *Gateway) WriteStatus(w io.Writer, listen string, urls []URLInfo) {
 	fmt.Fprintf(w, "rpcgate on http://%s: proxy at /<token>/<chain>, usage at /dashboard, admin UI at /_/\n\n", listen)
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "  CHAIN\tFAMILY\tEXPECTED\tSTATUS\tURL")
-	var notes []string
-	for _, up := range ups {
-		status, source := "off", up.Source
-		switch {
-		case up.Ready:
-			status = "ready"
-		case up.Source == "" && up.Err == nil:
-			source = "add an enabled URL for it"
-		default:
-			status = "failed"
-			if up.Err != nil {
-				notes = append(notes, fmt.Sprintf("  %s: %v", up.Chain.Name, up.Err))
-			}
-		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", up.Chain.Name, up.Chain.Family, expected(up.Chain), status, source)
-	}
-	_ = tw.Flush()
-	if len(ups) == 0 {
-		fmt.Fprintln(w, "  (no chains; add them in the admin UI)")
-	}
-	if len(notes) > 0 {
-		fmt.Fprintln(w)
-		for _, n := range notes {
-			fmt.Fprintln(w, n)
-		}
+	byID := map[string]*Upstream{}
+	for _, u := range g.Upstreams() {
+		byID[u.ID] = u
 	}
 
-	fmt.Fprintln(w, "\nURLs (a chain uses its first enabled one):")
-	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "  CHAIN\tNAME\tENABLED\tIN USE")
-	for _, u := range urls {
-		enabled, inUse := "no", ""
-		if u.Enabled {
-			enabled = "yes"
+	fmt.Fprintln(w, "URLs (a token uses the first enabled one of its URLs for each chain):")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  CHAIN\tNAME\tEXPECTED\tSTATUS")
+	var notes []string
+	for _, info := range urls {
+		expect, status := "-", "disabled"
+		if c, ok := ChainByName(info.Chain); ok {
+			expect = expected(c)
 		}
-		if u.InUse {
-			inUse = "yes"
+		if up := byID[info.ID]; up != nil {
+			status = "ready"
+			if !up.Ready {
+				status = "failed"
+				if up.Err != nil {
+					notes = append(notes, fmt.Sprintf("  %s (%s): %v", info.Name, info.Chain, up.Err))
+				}
+			}
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", u.Chain, u.Name, enabled, inUse)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", info.Chain, info.Name, expect, status)
 	}
 	_ = tw.Flush()
 	if len(urls) == 0 {
 		fmt.Fprintln(w, "  (none; add them in the admin UI under urls)")
 	}
+	for _, n := range notes {
+		fmt.Fprintln(w, n)
+	}
 
-	fmt.Fprintln(w, "\nProfiles (budgets are per token per chain):")
+	fmt.Fprintln(w, "\nTokens (budgets are per chain per day):")
 	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "  PROFILE\tCHAINS\tBUDGET\tBATCH\tMETHODS")
-	for _, p := range profiles {
-		p = p.Normalize()
-		budget := "unlimited"
-		if p.DailyBudget > 0 {
-			budget = fmt.Sprintf("%d/day", p.DailyBudget)
-		}
+	fmt.Fprintln(tw, "  TOKEN\tBUDGET\tMETHODS\tCHAINS")
+	toks := g.access.Load().list
+	for _, tok := range toks {
 		methods := "defaults"
-		if len(p.Methods) > 0 {
-			methods = strings.Join(p.Methods, ",")
+		if len(tok.patterns) > 0 {
+			methods = strings.Join(tok.patterns, ",")
 		}
-		chainList := strings.Join(p.Chains, ",")
+		var chains []string
+		for _, c := range Chains {
+			up := g.routeFor(tok, c.Name)
+			switch {
+			case up == nil:
+			case up.Ready:
+				chains = append(chains, fmt.Sprintf("%s (%s)", c.Name, up.Source))
+			default:
+				chains = append(chains, fmt.Sprintf("%s (%s, failed)", c.Name, up.Source))
+			}
+		}
+		chainList := strings.Join(chains, ", ")
 		if chainList == "" {
-			chainList = "(none)"
+			chainList = "(none; select its URLs in the admin UI)"
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%d\t%s\n", p.Name, chainList, budget, p.MaxBatch, methods)
+		fmt.Fprintf(tw, "  %s\t%d/day\t%s\t%s\n", tok.name, tok.budget, methods, chainList)
 	}
 	_ = tw.Flush()
-	fmt.Fprintf(w, "\nEnabled tokens: %d. Token status: GET http://%s/<token>/%s\n\n", tokens, listen, StatusPath)
+	if len(toks) == 0 {
+		fmt.Fprintln(w, "  (no enabled tokens)")
+	}
+	fmt.Fprintf(w, "\nToken status: GET http://%s/<token>/%s\n\n", listen, StatusPath)
 }
 
 // TokenStatus is the body of GET /<token>/status: only what that token can
 // use, and its usage today.
 type TokenStatus struct {
-	Token   string        `json:"token"` // the token's name, not its secret
-	Profile string        `json:"profile"`
-	Day     string        `json:"day"`
-	Limits  StatusLimits  `json:"limits"`
-	Chains  []ChainStatus `json:"chains"`
-	Usage   []MethodUsage `json:"usage"`
+	Token  string        `json:"token"` // the token's name, not its secret
+	Day    string        `json:"day"`
+	Limits StatusLimits  `json:"limits"`
+	Chains []ChainStatus `json:"chains"`
+	Usage  []MethodUsage `json:"usage"`
 }
 
-// StatusLimits are the token's profile limits.
+// StatusLimits are the token's limits.
 type StatusLimits struct {
-	DailyBudget int `json:"daily_budget"` // per chain; 0 = unlimited
+	DailyBudget int `json:"daily_budget"` // per chain per UTC day
 	MaxBatch    int `json:"max_batch"`
 }
 
@@ -127,8 +121,9 @@ type ChainStatus struct {
 	Chain     string   `json:"chain"`
 	Family    Family   `json:"family"`
 	URL       string   `json:"url"` // the token's own URL for this chain
+	Via       string   `json:"via"` // the name of the upstream URL it uses
 	UsedToday int64    `json:"used_today"`
-	Remaining *int64   `json:"remaining_today,omitempty"`
+	Remaining int64    `json:"remaining_today"`
 	Methods   []string `json:"methods"`
 }
 
@@ -138,10 +133,9 @@ func (g *Gateway) serveStatus(w http.ResponseWriter, r *http.Request, tok *token
 		return
 	}
 	day := g.day()
-	p := tok.profile
 	st := TokenStatus{
-		Token: tok.name, Profile: p.Name, Day: day,
-		Limits: StatusLimits{p.DailyBudget, p.MaxBatch},
+		Token: tok.name, Day: day,
+		Limits: StatusLimits{tok.budget, MaxBatch},
 		Chains: []ChainStatus{},
 		Usage:  g.usage.Today(day, tok.id),
 	}
@@ -149,23 +143,16 @@ func (g *Gateway) serveStatus(w http.ResponseWriter, r *http.Request, tok *token
 		st.Usage = []MethodUsage{}
 	}
 	base := requestOrigin(r) + "/" + url.PathEscape(tok.secret) + "/"
-	chains := *g.chains.Load()
-	names := append([]string(nil), p.Chains...)
-	sort.Strings(names)
-	for _, name := range names {
-		up := chains[name]
+	for _, c := range Chains {
+		up := g.routeFor(tok, c.Name)
 		if up == nil || !up.Ready {
 			continue // only chains a call would reach
 		}
-		methods := p.MethodsFor(up.Chain.Family)
+		methods := methodsFor(tok.patterns, c.Family)
 		sort.Strings(methods)
-		cs := ChainStatus{Chain: name, Family: up.Chain.Family, URL: base + name,
-			UsedToday: g.usage.Spent(day, tok.id, name), Methods: methods}
-		if p.DailyBudget > 0 {
-			rem := max(int64(p.DailyBudget)-cs.UsedToday, 0)
-			cs.Remaining = &rem
-		}
-		st.Chains = append(st.Chains, cs)
+		used := g.usage.Spent(day, tok.id, c.Name)
+		st.Chains = append(st.Chains, ChainStatus{Chain: c.Name, Family: c.Family, URL: base + c.Name, Via: up.Source,
+			UsedToday: used, Remaining: max(int64(tok.budget)-used, 0), Methods: methods})
 	}
 	w.Header().Set("Content-Type", contentTypeJSON)
 	enc := json.NewEncoder(w)

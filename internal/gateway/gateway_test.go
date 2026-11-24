@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,23 +16,28 @@ const chainIDCall = `{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}
 func TestTokenAuth(t *testing.T) {
 	up := newUpstream(t)
 	sol := newUpstream(t)
-	p := Profile{Name: "evm-only", Chains: []string{"bsc"}}
+	p := Settings{Name: "evm-only", Chains: []string{"bsc"}}
 	var logged strings.Builder
 	g, srv := newGateway(t, Options{Logger: newLogger(&logged)},
 		[]*Upstream{ready(t, bscChain, up.url()), ready(t, solanaChain, sol.url())},
-		Token{ID: "a", Name: "indexer", Secret: tokenA, Profile: &p},
-		Token{ID: "s", Name: "short", Secret: "tooShort123", Profile: &p},
-		Token{ID: "n", Name: "noprofile", Secret: tokenB})
+		tok("a", "indexer", tokenA, &p),
+		tok("s", "short", "tooShort123", &p),
+		Token{ID: "n", Name: "nourls", Secret: tokenB})
 
 	if status, body := post(t, srv.URL+"/"+tokenA+"/bsc", chainIDCall); status != http.StatusOK || !strings.Contains(body, "0x38") {
 		t.Fatalf("valid token: %d %s", status, body)
 	}
 
-	// Unknown, too short, profile-less and empty tokens all get the same
-	// answer, which says nothing about why, and upstream is never called.
+	// A token without URLs is valid but has no chains.
+	if status, body := post(t, srv.URL+"/"+tokenB+"/bsc", chainIDCall); status != http.StatusNotFound || !strings.Contains(body, "available: none") {
+		t.Errorf("token without URLs: %d %s", status, body)
+	}
+
+	// Unknown, too short and empty tokens all get the same answer, which says
+	// nothing about why, and upstream is never called.
 	before := up.calls.Load()
 	var first string
-	for _, tok := range []string{tokenA[:len(tokenA)-1] + "X", "tooShort123", tokenB, strings.Repeat("a", 200)} {
+	for _, tok := range []string{tokenA[:len(tokenA)-1] + "X", "tooShort123", strings.Repeat("a", 200)} {
 		status, body := post(t, srv.URL+"/"+tok+"/bsc", chainIDCall)
 		if status != http.StatusUnauthorized || !strings.Contains(body, `"unauthorized"`) {
 			t.Errorf("token %q: %d %s", tok, status, body)
@@ -54,9 +60,9 @@ func TestTokenAuth(t *testing.T) {
 	if status, _ := post(t, srv.URL+"/"+tokenA+"/bsc", chainIDCall); status != http.StatusUnauthorized {
 		t.Fatalf("revoked token: %d", status)
 	}
-	g.SetTokens([]Token{{ID: "a", Name: "indexer", Secret: tokenA, Profile: &p}})
+	g.SetTokens([]Token{tok("a", "indexer", tokenA, &p)})
 
-	// A chain outside the profile, an unknown chain, and odd paths.
+	// A chain without a URL for the token, an unknown chain, and odd paths.
 	for _, path := range []string{"/" + tokenA + "/solana", "/" + tokenA + "/nope"} {
 		status, body := post(t, srv.URL+path, chainIDCall)
 		if status != http.StatusNotFound || !strings.Contains(body, "available: bsc") || strings.Contains(body, "solana") {
@@ -76,22 +82,23 @@ func TestTokenAuth(t *testing.T) {
 	}
 }
 
-func TestProfileLimitsArePerTokenAndChain(t *testing.T) {
+func TestLimitsArePerTokenAndChain(t *testing.T) {
 	up := newUpstream(t)
 	up2 := newUpstream(t)
 	opbnb := Chain{Name: "opbnb", Family: EVM, ChainID: 56}
-	tight := Profile{Name: "tight", Chains: []string{"bsc", "opbnb"}, DailyBudget: 2, MaxBatch: 2}
-	loose := Profile{Name: "loose", Chains: []string{"bsc"},
+	tight := Settings{Name: "tight", Chains: []string{"bsc", "opbnb"}, DailyBudget: 2}
+	loose := Settings{Name: "loose", Chains: []string{"bsc"},
 		Methods: []string{"eth_chainId", "eth_getLogs", "eth_blockNumber", "eth_send*"}}
 	_, srv := newGateway(t, Options{}, []*Upstream{ready(t, bscChain, up.url()), ready(t, opbnb, up2.url())},
-		Token{ID: "a", Name: "tight", Secret: tokenA, Profile: &tight},
-		Token{ID: "b", Name: "loose", Secret: tokenB, Profile: &loose})
+		tok("a", "tight", tokenA, &tight),
+		tok("b", "loose", tokenB, &loose))
 	a, b := srv.URL+"/"+tokenA+"/bsc", srv.URL+"/"+tokenB+"/bsc"
 
-	three := "[" + strings.Repeat(chainIDCall+",", 2) + chainIDCall + "]"
-	if _, body := post(t, a, three); !strings.Contains(body, "batch of 3 exceeds") {
-		t.Errorf("tight batch: %s", body)
+	tooMany := "[" + strings.Repeat(chainIDCall+",", MaxBatch) + chainIDCall + "]"
+	if _, body := post(t, a, tooMany); !strings.Contains(body, fmt.Sprintf("batch of %d exceeds", MaxBatch+1)) {
+		t.Errorf("oversized batch: %s", body)
 	}
+	three := "[" + strings.Repeat(chainIDCall+",", 2) + chainIDCall + "]"
 	if _, body := post(t, b, three); strings.Count(body, "0x38") != 3 {
 		t.Errorf("loose batch: %s", body)
 	}
@@ -126,15 +133,15 @@ func TestProfileLimitsArePerTokenAndChain(t *testing.T) {
 // through, and lowering it below the count stops the token at once.
 func TestBudgetChangeKeepsTodaysCount(t *testing.T) {
 	up := newUpstream(t)
-	p := Profile{Name: "p", Chains: []string{"bsc"}, DailyBudget: 1}
-	g, srv := newGateway(t, Options{}, []*Upstream{ready(t, bscChain, up.url())}, Token{ID: "a", Name: "x", Secret: tokenA, Profile: &p})
+	p := Settings{Name: "p", Chains: []string{"bsc"}, DailyBudget: 1}
+	g, srv := newGateway(t, Options{}, []*Upstream{ready(t, bscChain, up.url())}, tok("a", "x", tokenA, &p))
 	url := srv.URL + "/" + tokenA + "/bsc"
 	post(t, url, chainIDCall)
 	if _, body := post(t, url, chainIDCall); !strings.Contains(body, "quota of 1") {
 		t.Fatalf("not limited: %s", body)
 	}
-	p2 := Profile{Name: "p", Chains: []string{"bsc"}, DailyBudget: 3}
-	g.SetTokens([]Token{{ID: "a", Name: "x", Secret: tokenA, Profile: &p2}})
+	p2 := Settings{Name: "p", Chains: []string{"bsc"}, DailyBudget: 3}
+	g.SetTokens([]Token{tok("a", "x", tokenA, &p2)})
 	for i := range 2 {
 		if _, body := post(t, url, chainIDCall); !strings.Contains(body, "0x38") {
 			t.Fatalf("call %d after raising the budget: %s", i, body)
@@ -147,11 +154,11 @@ func TestBudgetChangeKeepsTodaysCount(t *testing.T) {
 
 func TestSolanaMethodAllowlist(t *testing.T) {
 	up := newUpstream(t)
-	def := Profile{Name: "def", Chains: []string{"solana"}}
-	extra := Profile{Name: "extra", Chains: []string{"solana"}, Methods: []string{"get*"}}
+	def := Settings{Name: "def", Chains: []string{"solana"}}
+	extra := Settings{Name: "extra", Chains: []string{"solana"}, Methods: []string{"get*"}}
 	_, srv := newGateway(t, Options{}, []*Upstream{ready(t, solanaChain, up.url())},
-		Token{ID: "a", Name: "a", Secret: tokenA, Profile: &def},
-		Token{ID: "b", Name: "b", Secret: tokenB, Profile: &extra})
+		tok("a", "a", tokenA, &def),
+		tok("b", "b", tokenB, &extra))
 	a, b := srv.URL+"/"+tokenA+"/solana", srv.URL+"/"+tokenB+"/solana"
 
 	for _, m := range DefaultSolanaMethods {
@@ -187,14 +194,14 @@ func TestSolanaMethodAllowlist(t *testing.T) {
 
 func TestAnkrAdvancedAPI(t *testing.T) {
 	up := newUpstream(t)
-	ankr := Chain{Name: "ankr", Family: Ankr, Endpoint: "ankr"}
+	ankr := Chain{Name: "ankr", Family: Ankr}
 	u := ResolveUpstream(ankr, endpoint(up.url()), nil, 0)
 	if err := u.Check(context.Background()); err != nil || up.calls.Load() != 0 {
 		t.Fatalf("check: %v, %d upstream calls", err, up.calls.Load())
 	}
 	u.Ready = true
-	p := Profile{Name: "def", Chains: []string{"ankr"}}
-	_, srv := newGateway(t, Options{}, []*Upstream{u}, Token{ID: "a", Name: "a", Secret: tokenA, Profile: &p})
+	p := Settings{Name: "def", Chains: []string{"ankr"}}
+	_, srv := newGateway(t, Options{}, []*Upstream{u}, tok("a", "a", tokenA, &p))
 	url := srv.URL + "/" + tokenA + "/ankr"
 
 	for _, m := range DefaultAnkrMethods {
@@ -253,14 +260,14 @@ func TestTokenStatus(t *testing.T) {
 	up := newUpstream(t)
 	arb := Chain{Name: "arbitrum", Family: EVM, ChainID: 42161}
 	// polygon has no URL and base failed its check: neither is listed.
-	p := Profile{Name: "mixed", Chains: []string{"bsc", "solana", "polygon", "base"}, DailyBudget: 10, Methods: []string{"eth_chainId", "get*"}}
-	other := Profile{Name: "secondprofile", Chains: []string{"arbitrum"}}
+	p := Settings{Name: "mixed", Chains: []string{"bsc", "solana", "polygon", "base"}, DailyBudget: 10, Methods: []string{"eth_chainId", "get*"}}
+	other := Settings{Name: "secondprofile", Chains: []string{"arbitrum"}}
 	polygon := ResolveUpstream(Chain{Name: "polygon", Family: EVM, ChainID: 137}, nil, nil, 0)
-	base := ResolveUpstream(Chain{Name: "base", Family: EVM, ChainID: 8453, Endpoint: "x"}, endpoint(up.url()), nil, 0)
+	base := ResolveUpstream(Chain{Name: "base", Family: EVM, ChainID: 8453}, endpoint(up.url()), nil, 0)
 	base.Err = errors.New("upstream is chain 56, expected 8453")
 	g, srv := newGateway(t, Options{}, []*Upstream{ready(t, bscChain, up.url()), ready(t, solanaChain, up.url()), ready(t, arb, up.url()), polygon, base},
-		Token{ID: "a", Name: "indexer", Secret: tokenA, Profile: &p},
-		Token{ID: "b", Name: "secondclient", Secret: tokenB, Profile: &other})
+		tok("a", "indexer", tokenA, &p),
+		tok("b", "secondclient", tokenB, &other))
 
 	post(t, srv.URL+"/"+tokenA+"/bsc", chainIDCall)
 	post(t, srv.URL+"/"+tokenA+"/bsc", `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":[]}`)
@@ -275,11 +282,11 @@ func TestTokenStatus(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &st); err != nil {
 		t.Fatal(err)
 	}
-	if st.Token != "indexer" || st.Profile != "mixed" || st.Limits.DailyBudget != 10 || len(st.Chains) != 2 {
+	if st.Token != "indexer" || st.Limits.DailyBudget != 10 || st.Limits.MaxBatch != MaxBatch || len(st.Chains) != 2 {
 		t.Fatalf("status: %+v", st)
 	}
 	bsc, sol := st.Chains[0], st.Chains[1]
-	if bsc.Chain != "bsc" || bsc.UsedToday != 1 || *bsc.Remaining != 9 || bsc.URL != srv.URL+"/"+tokenA+"/bsc" {
+	if bsc.Chain != "bsc" || bsc.UsedToday != 1 || bsc.Remaining != 9 || bsc.Via != "test" || bsc.URL != srv.URL+"/"+tokenA+"/bsc" {
 		t.Errorf("bsc: %+v", bsc)
 	}
 	if sol.Chain != "solana" || sol.Family != Solana || sol.UsedToday != 1 || sol.URL != srv.URL+"/"+tokenA+"/solana" || !strings.Contains(strings.Join(sol.Methods, ","), "get*") {
@@ -311,9 +318,9 @@ func TestSecretsNeverInLogs(t *testing.T) {
 		return http.StatusInternalServerError, "upstream " + secretKey + " broke"
 	}
 	var logged strings.Builder
-	p := Profile{Name: "p", Chains: []string{"bsc"}}
+	p := Settings{Name: "p", Chains: []string{"bsc"}}
 	_, srv := newGateway(t, Options{Logger: newLogger(&logged)}, []*Upstream{ready(t, bscChain, up.url())},
-		Token{ID: "a", Name: "indexer", Secret: tokenA, Profile: &p})
+		tok("a", "indexer", tokenA, &p))
 	url := srv.URL + "/" + tokenA + "/bsc"
 	_, body := post(t, url, chainIDCall)
 	post(t, url, `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"address":"0x1"}]}`) // upstream fails
@@ -339,8 +346,8 @@ func TestSecretsNeverInLogs(t *testing.T) {
 
 func TestUsageCountsAndDrain(t *testing.T) {
 	up := newUpstream(t)
-	p := Profile{Name: "p", Chains: []string{"bsc"}, DailyBudget: 3}
-	g, srv := newGateway(t, Options{}, []*Upstream{ready(t, bscChain, up.url())}, Token{ID: "a", Name: "indexer", Secret: tokenA, Profile: &p})
+	p := Settings{Name: "p", Chains: []string{"bsc"}, DailyBudget: 3}
+	g, srv := newGateway(t, Options{}, []*Upstream{ready(t, bscChain, up.url())}, tok("a", "indexer", tokenA, &p))
 	url := srv.URL + "/" + tokenA + "/bsc"
 	post(t, url, "["+chainIDCall+","+chainIDCall+"]")
 	post(t, url, `{"jsonrpc":"2.0","id":1,"method":"made_up","params":[]}`)
@@ -351,7 +358,7 @@ func TestUsageCountsAndDrain(t *testing.T) {
 	d := g.Usage().Drain()
 	day := g.day()
 	k := func(m string) UsageKey {
-		return UsageKey{Day: day, TokenID: "a", TokenName: "indexer", Chain: "bsc", Method: m}
+		return UsageKey{Day: day, TokenID: "a", TokenName: "indexer", Chain: "bsc", URL: "test", Method: m}
 	}
 	want := map[UsageKey]Counts{
 		k("eth_chainId"):     {Requests: 2, Rejections: 1},
@@ -406,9 +413,9 @@ func TestMethodPatterns(t *testing.T) {
 
 func TestStarAllowsEveryMethod(t *testing.T) {
 	up := newUpstream(t)
-	all := Profile{Name: "all", Chains: []string{"bsc"}, Methods: []string{"*"}}
+	all := Settings{Name: "all", Chains: []string{"bsc"}, Methods: []string{"*"}}
 	g, srv := newGateway(t, Options{}, []*Upstream{ready(t, bscChain, up.url())},
-		Token{ID: "a", Name: "a", Secret: tokenA, Profile: &all})
+		tok("a", "a", tokenA, &all))
 	url := srv.URL + "/" + tokenA + "/bsc"
 	for _, m := range []string{"eth_sendRawTransaction", "debug_traceTransaction", "weird name!"} {
 		if _, body := post(t, url, `{"jsonrpc":"2.0","id":1,"method":"`+m+`","params":[]}`); !strings.Contains(body, `"result"`) {
@@ -445,15 +452,15 @@ func TestRequestOrigin(t *testing.T) {
 func TestHeliusMethods(t *testing.T) {
 	up := newUpstream(t)
 	key := "heliuskey0123456789"
-	helius := ResolveUpstream(Chain{Name: "helius", Family: Helius, GenesisHash: solanaGenesis, Endpoint: "helius"},
+	helius := ResolveUpstream(Chain{Name: "helius", Family: Helius, GenesisHash: solanaGenesis},
 		&Endpoint{Name: "helius", URL: up.url() + "?api-key=" + key}, nil, 0)
 	if err := helius.Check(context.Background()); err != nil {
 		t.Fatalf("check: %v", err)
 	}
 	helius.Ready = true
-	p := Profile{Name: "def", Chains: []string{"helius", "solana"}}
+	p := Settings{Name: "def", Chains: []string{"helius", "solana"}}
 	_, srv := newGateway(t, Options{}, []*Upstream{helius, ready(t, solanaChain, up.url())},
-		Token{ID: "a", Name: "a", Secret: tokenA, Profile: &p})
+		tok("a", "a", tokenA, &p))
 	h, sol := srv.URL+"/"+tokenA+"/helius", srv.URL+"/"+tokenA+"/solana"
 	for _, m := range []string{"getTransactionsForAddress", "getAssetsByOwner", "getSlot"} {
 		if _, body := post(t, h, `{"jsonrpc":"2.0","id":1,"method":"`+m+`","params":["x"]}`); !strings.Contains(body, `"result"`) {
@@ -465,8 +472,45 @@ func TestHeliusMethods(t *testing.T) {
 			t.Errorf("%s %s allowed: %s", c.url, c.method, body)
 		}
 	}
-	wrong := ResolveUpstream(Chain{Name: "helius", Family: Helius, GenesisHash: "other", Endpoint: "x"}, endpoint(up.url()), nil, 0)
+	wrong := ResolveUpstream(Chain{Name: "helius", Family: Helius, GenesisHash: "other"}, endpoint(up.url()), nil, 0)
 	if err := wrong.Check(context.Background()); err == nil || !strings.Contains(err.Error(), "genesis hash") {
 		t.Errorf("wrong genesis: %v", err)
+	}
+}
+
+// Each token reaches its own URL for a chain, the first enabled one of its
+// URLs wins, and a token never falls back to a URL it did not pick.
+func TestTokensUseTheirOwnURLs(t *testing.T) {
+	feUp, beUp := newUpstream(t), newUpstream(t)
+	fe := ResolveUpstream(bscChain, &Endpoint{ID: "fe", Name: "ankr-fe", URL: feUp.url()}, nil, 0)
+	be := ResolveUpstream(bscChain, &Endpoint{ID: "be", Name: "ankr-be", URL: beUp.url()}, nil, 0)
+	fe.Ready, be.Ready = true, true
+	g, srv := newGateway(t, Options{}, []*Upstream{fe, be},
+		Token{ID: "a", Name: "frontend", Secret: tokenA, URLs: []string{"fe"}},
+		Token{ID: "b", Name: "backend", Secret: tokenB, URLs: []string{"be", "fe"}})
+	post(t, srv.URL+"/"+tokenA+"/bsc", chainIDCall)
+	if feUp.calls.Load() != 1 || beUp.calls.Load() != 0 {
+		t.Fatalf("frontend: fe %d, be %d calls", feUp.calls.Load(), beUp.calls.Load())
+	}
+	// backend picked both; fe is older, so it wins.
+	post(t, srv.URL+"/"+tokenB+"/bsc", chainIDCall)
+	if feUp.calls.Load() != 2 || beUp.calls.Load() != 0 {
+		t.Fatalf("backend with both: fe %d, be %d calls", feUp.calls.Load(), beUp.calls.Load())
+	}
+	// fe disabled: backend moves to be; frontend has nothing left.
+	g.SetUpstreams([]*Upstream{be})
+	post(t, srv.URL+"/"+tokenB+"/bsc", chainIDCall)
+	if beUp.calls.Load() != 1 {
+		t.Fatalf("backend after fe was disabled: be %d calls", beUp.calls.Load())
+	}
+	if status, body := post(t, srv.URL+"/"+tokenA+"/bsc", chainIDCall); status != http.StatusNotFound || beUp.calls.Load() != 1 {
+		t.Fatalf("frontend fell back: %d %s", status, body)
+	}
+	// A failed URL is not skipped either.
+	be2 := *be
+	be2.Ready = false
+	g.SetUpstreams([]*Upstream{&be2, fe})
+	if status, _ := post(t, srv.URL+"/"+tokenB+"/bsc", chainIDCall); status != http.StatusNotFound {
+		t.Fatalf("backend skipped its failed URL: %d", status)
 	}
 }

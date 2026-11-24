@@ -116,12 +116,30 @@ func (h *harness) save(t *testing.T, r *core.Record) {
 	h.st.WaitReloads()
 }
 
+// chains maps each chain to its oldest enabled URL's upstream, which is the
+// one a token with every URL uses.
 func (h *harness) chains() map[string]*gateway.Upstream {
 	ups := map[string]*gateway.Upstream{}
-	for _, u := range h.gw.Chains() {
-		ups[u.Chain.Name] = u
+	for _, u := range h.gw.Upstreams() {
+		if ups[u.Chain.Name] == nil {
+			ups[u.Chain.Name] = u
+		}
 	}
 	return ups
+}
+
+// allURLs returns the IDs of every saved URL.
+func (h *harness) allURLs(t *testing.T) []string {
+	t.Helper()
+	recs, err := h.app.FindAllRecords(URLs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, len(recs))
+	for i, r := range recs {
+		ids[i] = r.Id
+	}
+	return ids
 }
 
 func (h *harness) post(t *testing.T, token, chain, body string) (int, string) {
@@ -144,9 +162,9 @@ func (h *harness) record(t *testing.T, col, filter string, params dbx.Params) *c
 	return r
 }
 
-// createToken saves a token record with the named profile. An empty secret
+// createToken saves a token record using the given URLs. An empty secret
 // lets PocketBase generate one.
-func (h *harness) createToken(t *testing.T, name, secret, profile string) *core.Record {
+func (h *harness) createToken(t *testing.T, name, secret string, urls []string) *core.Record {
 	t.Helper()
 	col, err := h.app.FindCollectionByNameOrId(Tokens)
 	if err != nil {
@@ -156,7 +174,7 @@ func (h *harness) createToken(t *testing.T, name, secret, profile string) *core.
 	r.Set("name", name)
 	r.Set("token", secret)
 	r.Set("enabled", true)
-	r.Set("profile", h.record(t, Profiles, "name = {:n}", dbx.Params{"n": profile}).Id)
+	r.Set("urls", urls)
 	if err := h.app.Save(r); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +197,7 @@ func TestSchemaSnapshotIsCurrent(t *testing.T) {
 	}
 
 	h := start(t, t.TempDir(), "")
-	for _, name := range []string{URLs, Profiles, Tokens, Usage} {
+	for _, name := range []string{URLs, Tokens, Usage} {
 		c, err := h.app.FindCollectionByNameOrId(name)
 		if err != nil {
 			t.Fatal(err)
@@ -204,43 +222,31 @@ func TestSchemaSnapshotIsCurrent(t *testing.T) {
 	}
 }
 
-func TestSeedLoadAndHooks(t *testing.T) {
+func TestLoadAndHooks(t *testing.T) {
 	rpc := fakeRPC(t)
 	h := start(t, t.TempDir(), "")
 
-	// Defaults: three chains, one profile, no URLs, no tokens. Nothing is
-	// served until a chain has a URL.
-	ups := h.chains()
-	if len(ups) != len(gateway.Chains) || ups["bsc"].Ready || ups["bsc"].Chain.Endpoint != "" || ups["bsc"].Configured() || ups["ankr"].Ready {
-		t.Fatalf("chains before a URL: %+v", ups)
-	}
-	if n, _ := h.app.CountRecords(URLs); n != 0 || len(h.st.URLInfo()) != 0 {
-		t.Fatalf("seed made %d URLs", n)
+	// An empty database serves nothing and creates nothing.
+	if len(h.gw.Upstreams()) != 0 || len(h.st.URLInfo()) != 0 {
+		t.Fatalf("upstreams before a URL: %+v", h.gw.Upstreams())
 	}
 	for _, c := range []string{"bsc", "arbitrum", "solana", "ankr"} {
 		h.addURL(t, c, "fake", rpcURL(rpc), true)
 	}
-	ups = h.chains()
-	if len(ups) != len(gateway.Chains) || ups["base"].Configured() || !ups["ankr"].Ready || !ups["bsc"].Ready || !ups["solana"].Ready || ups["arbitrum"].Ready ||
+	ups := h.chains()
+	if len(ups) != 4 || !ups["ankr"].Ready || !ups["bsc"].Ready || !ups["solana"].Ready || ups["arbitrum"].Ready ||
 		!strings.Contains(ups["arbitrum"].Err.Error(), "expected 42161") {
-		t.Fatalf("chains after seed: %+v", ups)
+		t.Fatalf("upstreams: %+v", ups)
 	}
-	if n, _ := h.app.CountRecords(Tokens); n != 0 || len(h.st.Profiles()) != 1 {
-		t.Fatalf("seed made %d tokens, %d profiles", n, len(h.st.Profiles()))
-	}
-	if err := h.st.SeedDefaults(); err != nil {
-		t.Fatal(err)
-	}
-	if n, _ := h.app.CountRecords(Profiles); n != 1 {
-		t.Fatalf("second seed: %d profiles", n)
-	}
-	if n, _ := h.app.CountRecords(URLs); n != 4 {
-		t.Fatalf("second seed: %d URLs", n)
+	for _, c := range []string{Tokens, Usage} {
+		if n, _ := h.app.CountRecords(c); n != 0 {
+			t.Fatalf("start created %d %s", n, c)
+		}
 	}
 
 	// Creating a token in PocketBase makes it usable at once, with a
 	// generated secret.
-	tok := h.createToken(t, "indexer", "", "read-only")
+	tok := h.createToken(t, "indexer", "", h.allURLs(t))
 	secret := tok.GetString("token")
 	if len(secret) != 40 {
 		t.Fatalf("generated token %q", secret)
@@ -255,24 +261,36 @@ func TestSeedLoadAndHooks(t *testing.T) {
 		t.Fatalf("failed chain served: %d", status)
 	}
 
-	// A profile edit applies to its tokens.
-	prof := h.record(t, Profiles, "name = 'read-only'", nil)
-	prof.Set("methods", []string{"eth_sendRawTransaction"})
-	if err := h.app.Save(prof); err != nil {
+	// A token's edits apply at once.
+	tok.Set("methods", []string{"eth_sendRawTransaction"})
+	if err := h.app.Save(tok); err != nil {
 		t.Fatal(err)
 	}
 	if _, body := h.post(t, secret, "bsc", `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0x"]}`); !strings.Contains(body, `"result"`) {
 		t.Fatalf("after enabling a method: %s", body)
 	}
-	prof.Set("methods", "not a list")
-	if err := h.app.Save(prof); err != nil {
+	tok.Set("methods", "not a list")
+	if err := h.app.Save(tok); err != nil {
 		t.Fatal(err)
 	}
 	if status, _ := h.post(t, secret, "bsc", chainID); status != http.StatusUnauthorized {
-		t.Fatalf("token with a broken profile still works: %d", status)
+		t.Fatalf("token with broken methods still works: %d", status)
 	}
-	prof.Set("methods", []string{})
-	if err := h.app.Save(prof); err != nil {
+	tok.Set("methods", []string{})
+	if err := h.app.Save(tok); err != nil {
+		t.Fatal(err)
+	}
+	// Its URLs decide its chains.
+	sol := h.record(t, URLs, "chain = 'solana'", nil)
+	tok.Set("urls", []string{sol.Id})
+	if err := h.app.Save(tok); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := h.post(t, secret, "bsc", chainID); status != http.StatusNotFound {
+		t.Fatalf("bsc without a bsc URL: %d", status)
+	}
+	tok.Set("urls", h.allURLs(t))
+	if err := h.app.Save(tok); err != nil {
 		t.Fatal(err)
 	}
 
@@ -304,7 +322,7 @@ func TestSeedLoadAndHooks(t *testing.T) {
 	}
 
 	// Disabling a chain's only URL takes the chain out after the reload.
-	tok = h.createToken(t, "again", "again0123456789abcdefghijklm", "read-only")
+	tok = h.createToken(t, "again", "again0123456789abcdefghijklm", h.allURLs(t))
 	bscURL := h.record(t, URLs, "chain = 'bsc'", nil)
 	bscURL.Set("enabled", false)
 	h.save(t, bscURL)
@@ -320,13 +338,12 @@ func TestUsageFlushAndBudgetReload(t *testing.T) {
 	rpc := fakeRPC(t)
 	dir := t.TempDir()
 	h := start(t, dir, rpcURL(rpc))
-	prof := h.record(t, Profiles, "name = 'read-only'", nil)
-	prof.Set("daily_budget", 3)
-	if err := h.app.Save(prof); err != nil {
+	const secret = "budget0123456789abcdefghijk"
+	tok := h.createToken(t, "indexer", secret, h.allURLs(t))
+	tok.Set("daily_budget", 3)
+	if err := h.app.Save(tok); err != nil {
 		t.Fatal(err)
 	}
-	const secret = "budget0123456789abcdefghijk"
-	h.createToken(t, "indexer", secret, "read-only")
 
 	h.post(t, secret, "bsc", chainID)
 	h.post(t, secret, "bsc", `{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":[]}`) // rejected
@@ -349,6 +366,9 @@ func TestUsageFlushAndBudgetReload(t *testing.T) {
 	for _, r := range rows {
 		if r.GetString("token_name") != "indexer" {
 			t.Errorf("row token_name = %q", r.GetString("token_name"))
+		}
+		if r.GetString("url") != "test" {
+			t.Errorf("row url = %q", r.GetString("url"))
 		}
 		got[r.GetString("chain")+"/"+r.GetString("method")] = [3]int{r.GetInt("requests"), r.GetInt("rejections"), r.GetInt("upstream_errors")}
 	}
@@ -387,7 +407,7 @@ func TestUsageFlushAndBudgetReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Only the chains with a URL are listed: bsc and solana.
-	if st.Token != "indexer" || len(st.Chains) != 2 || st.Chains[0].Chain != "bsc" || st.Chains[0].UsedToday != 3 || *st.Chains[0].Remaining != 0 ||
+	if st.Token != "indexer" || len(st.Chains) != 2 || st.Chains[0].Chain != "bsc" || st.Chains[0].UsedToday != 3 || st.Chains[0].Remaining != 0 || st.Chains[0].Via != "test" ||
 		st.Chains[0].URL != h2.srv.URL+"/"+secret+"/bsc" {
 		t.Fatalf("status after restart: %+v", st)
 	}
@@ -397,12 +417,15 @@ func TestURLSwitching(t *testing.T) {
 	rpc := fakeRPC(t)
 	h := start(t, t.TempDir(), "")
 	const secret = "switch0123456789abcdefghijk"
-	h.createToken(t, "indexer", secret, "read-only")
-
 	ankr := h.addURL(t, "bsc", "ankr", rpc.URL+"/wrong-key", true) // 404s: configured, not ready
 	node := h.addURL(t, "bsc", "node", rpcURL(rpc), false)
+	h.createToken(t, "indexer", secret, []string{ankr.Id, node.Id})
 	if got := h.chains()["bsc"]; got.Source != "ankr" || got.Ready {
 		t.Fatalf("first URL: %+v", got)
+	}
+	// Its first enabled URL failed: the chain is unavailable, not skipped.
+	if status, _ := h.post(t, secret, "bsc", chainID); status != http.StatusNotFound {
+		t.Fatalf("failed URL skipped: %d", status)
 	}
 
 	// Both enabled: the older one (ankr) still wins.
@@ -412,11 +435,11 @@ func TestURLSwitching(t *testing.T) {
 		t.Fatalf("both enabled: %q", got)
 	}
 	info := h.st.URLInfo()
-	if len(info) != 2 || info[0].Name != "ankr" || !info[0].InUse || info[1].Name != "node" || info[1].InUse || info[1].Chain != "bsc" {
+	if len(info) != 2 || info[0].Name != "ankr" || info[1].Name != "node" || info[1].Chain != "bsc" || info[1].ID != node.Id {
 		t.Fatalf("url info: %+v", info)
 	}
 
-	// Disabling ankr switches bsc to node at once.
+	// Disabling ankr switches the token to node at once.
 	ankr.Set("enabled", false)
 	h.save(t, ankr)
 	if got := h.chains()["bsc"]; !got.Ready || got.Source != "node" {
@@ -425,17 +448,17 @@ func TestURLSwitching(t *testing.T) {
 	if status, body := h.post(t, secret, "bsc", chainID); status != 200 || !strings.Contains(body, "0x38") {
 		t.Fatalf("bsc through node: %d %s", status, body)
 	}
-	if h.chains()["arbitrum"].Configured() {
-		t.Fatal("arbitrum served without a URL")
-	}
 
-	// Deleting the URL in use takes the chain out.
+	// Deleting the URL in use takes the chain out, even though tokens use it.
 	if err := h.app.Delete(node); err != nil {
 		t.Fatal(err)
 	}
 	h.st.WaitReloads()
-	if h.chains()["bsc"].Configured() {
+	if h.chains()["bsc"] != nil {
 		t.Fatal("bsc still served after its only enabled URL was deleted")
+	}
+	if status, _ := h.post(t, secret, "bsc", chainID); status != http.StatusNotFound {
+		t.Fatalf("after delete: %d", status)
 	}
 }
 
@@ -512,8 +535,8 @@ func TestTokenLastUsed(t *testing.T) {
 	rpc := fakeRPC(t)
 	h := start(t, t.TempDir(), rpcURL(rpc))
 	const secret = "lastused0123456789abcdefghij"
-	tok := h.createToken(t, "indexer", secret, "read-only")
-	idle := h.createToken(t, "idle", "idle0123456789abcdefghijklmn", "read-only")
+	tok := h.createToken(t, "indexer", secret, h.allURLs(t))
+	idle := h.createToken(t, "idle", "idle0123456789abcdefghijklmn", h.allURLs(t))
 	updated := tok.GetString("updated")
 
 	before := time.Now().UTC().Add(-time.Second)

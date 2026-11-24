@@ -4,7 +4,7 @@
 //
 // It is a PocketBase app, and one port serves both: the proxy at
 // /<token>/<chain> and /<token>/status, the usage dashboard (/dashboard),
-// and PocketBase's admin UI (/_/) and API (/api/) for the chains' URLs, profiles, tokens and
+// and PocketBase's admin UI (/_/) and API (/api/) for URLs, tokens and
 // usage. RPC URLs are set there, not in the environment. PocketBase's
 // backup API is switched off, because a backup holds the provider keys.
 //
@@ -118,7 +118,7 @@ func run() error {
 			return err
 		}
 		se.Server.Handler = route(gw, se.Server.Handler)
-		gateway.WriteStatus(os.Stderr, listen, gw.Chains(), st.URLInfo(), st.Profiles(), st.TokenCount())
+		gw.WriteStatus(os.Stderr, listen, st.URLInfo())
 
 		var ctx context.Context
 		ctx, stopRun = context.WithCancel(context.Background())

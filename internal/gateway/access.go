@@ -28,7 +28,7 @@ var Families = []Family{EVM, Solana, Ankr, Helius}
 func (f Family) solanaLike() bool { return f == Solana || f == Helius }
 
 // DefaultEVMMethods are read-only. Anything that signs, sends, subscribes, or
-// administers is absent; a profile's methods replace them.
+// administers is absent; a token's methods replace them.
 var DefaultEVMMethods = []string{
 	"eth_chainId",
 	"net_version",
@@ -46,7 +46,7 @@ var DefaultEVMMethods = []string{
 }
 
 // DefaultSolanaMethods are read-only. getProgramAccounts (expensive) and
-// sendTransaction (a write) stay off unless a profile's methods allow them.
+// sendTransaction (a write) stay off unless a token's methods allow them.
 var DefaultSolanaMethods = []string{
 	"getSlot",
 	"getBlockHeight",
@@ -119,47 +119,18 @@ func DefaultMethods(f Family) []string {
 	return nil
 }
 
-// Profile is a set of limits shared by tokens. Zero numeric limits take the
-// defaults in Normalize, except DailyBudget, where 0 means unlimited.
-type Profile struct {
-	ID   string
-	Name string
-	// Chains are the chain names a token with this profile may call.
-	Chains []string
-	// Methods are the method patterns a token may call, replacing the
-	// family defaults when non-empty. A pattern is a method name, where *
-	// matches any run of characters: "eth_*", or "*" for every method.
-	Methods []string
+// DefaultDailyBudget is a token's budget when its daily_budget is 0.
+const DefaultDailyBudget = 200000
 
-	DailyBudget int // per token and chain per UTC day; 0 = unlimited
-	MaxBatch    int
-}
+// MaxBatch is the most items a JSON-RPC batch may hold.
+const MaxBatch = 50
 
-// Profile defaults.
-const (
-	DefaultMaxBatch = 50
-)
-
-// Normalize fills zero limits with defaults.
-func (p Profile) Normalize() Profile {
-	if p.MaxBatch <= 0 {
-		p.MaxBatch = DefaultMaxBatch
-	}
-	if p.DailyBudget < 0 {
-		p.DailyBudget = 0
-	}
-	return p
-}
-
-// AllowsChain reports whether the chain is in the profile.
-func (p *Profile) AllowsChain(name string) bool { return slices.Contains(p.Chains, name) }
-
-// MethodsFor returns the method patterns the profile allows on a chain of
-// family f: its own, or the family defaults. Names meant for another family
+// methodsFor returns the method patterns allowed on a chain of family f:
+// the token's own, or the family defaults. Names meant for another family
 // are harmless: they never match.
-func (p *Profile) MethodsFor(f Family) []string {
-	if len(p.Methods) > 0 {
-		return slices.Clone(p.Methods)
+func methodsFor(patterns []string, f Family) []string {
+	if len(patterns) > 0 {
+		return slices.Clone(patterns)
 	}
 	return DefaultMethods(f)
 }
@@ -199,12 +170,24 @@ func matchMethod(pattern, method string) bool {
 }
 
 // Token is a client credential. Name identifies it in usage and logs; the
-// secret itself is kept only as a hash.
+// secret itself is kept only as a hash. URLs are the IDs of the upstream URLs
+// it may use, which also decide its chains: for each chain, it uses the
+// first enabled one of them (oldest first).
 type Token struct {
-	ID      string
-	Name    string
-	Secret  string // only read by NewAccess, then dropped
-	Profile *Profile
+	ID          string
+	Name        string
+	Secret      string // only read by NewAccess, then dropped
+	URLs        []string
+	Methods     []string // patterns; empty means the family defaults
+	DailyBudget int      // per chain per UTC day; 0 means DefaultDailyBudget
+}
+
+// Budget returns the token's daily budget per chain.
+func (t Token) Budget() int {
+	if t.DailyBudget > 0 {
+		return t.DailyBudget
+	}
+	return DefaultDailyBudget
 }
 
 // MinTokenLength is the shortest secret the gateway accepts.
@@ -214,27 +197,34 @@ const MinTokenLength = 24
 // secret so a lookup's timing says nothing about the secret's prefix.
 type access struct {
 	tokens map[[32]byte]*tokenEntry
+	list   []*tokenEntry // in the order given, for the status table
 }
 
 type tokenEntry struct {
 	id, name string
 	secret   string // only to scrub it from log lines
-	profile  Profile
+	urls     map[string]bool
+	patterns []string
+	budget   int
 	methods  map[Family]methodSet
 }
 
 func newAccess(tokens []Token) *access {
 	a := &access{tokens: make(map[[32]byte]*tokenEntry, len(tokens))}
 	for _, t := range tokens {
-		if len(t.Secret) < MinTokenLength || t.Profile == nil {
+		if len(t.Secret) < MinTokenLength {
 			continue
 		}
-		p := t.Profile.Normalize()
-		e := &tokenEntry{id: t.ID, name: t.Name, secret: t.Secret, profile: p, methods: map[Family]methodSet{}}
+		e := &tokenEntry{id: t.ID, name: t.Name, secret: t.Secret, urls: map[string]bool{},
+			patterns: t.Methods, budget: t.Budget(), methods: map[Family]methodSet{}}
+		for _, id := range t.URLs {
+			e.urls[id] = true
+		}
 		for _, f := range Families {
-			e.methods[f] = p.MethodsFor(f)
+			e.methods[f] = methodsFor(t.Methods, f)
 		}
 		a.tokens[sha256.Sum256([]byte(t.Secret))] = e
+		a.list = append(a.list, e)
 	}
 	return a
 }

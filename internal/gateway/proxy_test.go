@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,7 @@ var pool = common.HexToAddress("0x46Cf1cF8c69595804ba91dFdd8d6b960c9B0a7C4")
 
 func TestForwardsAllowedMethodsThroughEthclient(t *testing.T) {
 	up := newUpstream(t)
-	client, err := ethclient.Dial(newProxy(t, up.url(), Profile{}))
+	client, err := ethclient.Dial(newProxy(t, up.url(), Settings{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +39,7 @@ func TestForwardsAllowedMethodsThroughEthclient(t *testing.T) {
 
 func TestRejectsMethodsOutsideTheAllowlist(t *testing.T) {
 	up := newUpstream(t)
-	proxy := newProxy(t, up.url(), Profile{})
+	proxy := newProxy(t, up.url(), Settings{})
 	for _, method := range []string{"eth_sendRawTransaction", "eth_sendTransaction", "eth_accounts", "eth_subscribe",
 		"debug_traceTransaction", "admin_peers", "getSlot"} {
 		_, body := post(t, proxy, `{"jsonrpc":"2.0","id":1,"method":"`+method+`","params":[]}`)
@@ -53,7 +54,7 @@ func TestRejectsMethodsOutsideTheAllowlist(t *testing.T) {
 
 func TestLogsPassThrough(t *testing.T) {
 	up := newUpstream(t)
-	proxy := newProxy(t, up.url(), Profile{})
+	proxy := newProxy(t, up.url(), Settings{})
 	// No address, a wide range: the gateway leaves eth_getLogs to the
 	// provider, so it costs one upstream call and no head lookup.
 	_, body := post(t, proxy, `{"jsonrpc":"2.0","id":7,"method":"eth_getLogs","params":[{"fromBlock":"earliest","toBlock":"latest"}]}`)
@@ -69,7 +70,7 @@ func TestErrorsClassifyForLogRange(t *testing.T) {
 	ctx := context.Background()
 	q := ethereum.FilterQuery{FromBlock: big.NewInt(1), ToBlock: big.NewInt(2), Addresses: []common.Address{pool}}
 
-	client, _ := ethclient.Dial(newProxy(t, up.url(), Profile{DailyBudget: 1}))
+	client, _ := ethclient.Dial(newProxy(t, up.url(), Settings{DailyBudget: 1}))
 	if _, err := client.FilterLogs(ctx, q); err != nil {
 		t.Fatal(err)
 	}
@@ -81,22 +82,21 @@ func TestErrorsClassifyForLogRange(t *testing.T) {
 
 func TestBatchLimitsAndBudgetCountItems(t *testing.T) {
 	up := newUpstream(t)
-	proxy := newProxy(t, up.url(), Profile{MaxBatch: 3, DailyBudget: 5})
-	item := `{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`
+	proxy := newProxy(t, up.url(), Settings{DailyBudget: MaxBatch + 10})
 	batch := func(n int) string {
 		parts := make([]string, n)
 		for i := range parts {
-			parts[i] = strings.Replace(item, "%d", string(rune('1'+i)), 1)
+			parts[i] = fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, i+1)
 		}
 		return "[" + strings.Join(parts, ",") + "]"
 	}
-	if _, body := post(t, proxy, batch(4)); !strings.Contains(body, "exceeds") {
+	if _, body := post(t, proxy, batch(MaxBatch+1)); !strings.Contains(body, "exceeds") {
 		t.Fatalf("oversized batch: %s", body)
 	}
-	if _, body := post(t, proxy, batch(3)); !strings.Contains(body, `"0x38"`) {
-		t.Fatalf("batch of 3: %s", body)
+	if _, body := post(t, proxy, batch(MaxBatch)); strings.Count(body, `"0x38"`) != MaxBatch {
+		t.Fatalf("full batch: %s", body)
 	}
-	status, body := post(t, proxy, batch(3)) // 3 + 3 > 5
+	status, body := post(t, proxy, batch(MaxBatch)) // 50 + 50 > 60
 	if status != http.StatusTooManyRequests || !strings.Contains(body, "quota") || !strings.HasPrefix(body, "[") {
 		t.Fatalf("over budget: %d %s", status, body)
 	}
@@ -111,9 +111,9 @@ func TestBatchLimitsAndBudgetCountItems(t *testing.T) {
 func TestBudgetResetsEachUTCDay(t *testing.T) {
 	up := newUpstream(t)
 	now := time.Date(2026, 11, 24, 23, 59, 0, 0, time.UTC)
-	p := Profile{Chains: []string{"bsc"}, DailyBudget: 1}
+	p := Settings{Chains: []string{"bsc"}, DailyBudget: 1}
 	_, srv := newGateway(t, Options{Now: func() time.Time { return now }}, []*Upstream{ready(t, bscChain, up.url())},
-		Token{ID: "a", Name: "indexer", Secret: tokenA, Profile: &p})
+		tok("a", "indexer", tokenA, &p))
 	proxy := srv.URL + "/" + tokenA + "/bsc"
 	req := `{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`
 	if _, body := post(t, proxy, req); !strings.Contains(body, "0x38") {
@@ -136,7 +136,7 @@ func TestNeverRevealsUpstreamURL(t *testing.T) {
 	up.reply = func([]byte) (int, string) {
 		return http.StatusOK, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"key ` + secretKey + ` invalid at ` + up.url() + `"}}`
 	}
-	if _, body := post(t, newProxy(t, up.url(), Profile{}), req); strings.Contains(body, secretKey) || !strings.Contains(body, "[redacted]") {
+	if _, body := post(t, newProxy(t, up.url(), Settings{}), req); strings.Contains(body, secretKey) || !strings.Contains(body, "[redacted]") {
 		t.Fatalf("echoed key not scrubbed: %s", body)
 	}
 
@@ -144,7 +144,7 @@ func TestNeverRevealsUpstreamURL(t *testing.T) {
 	up.reply = nil
 	redirect := httptest.NewServer(http.RedirectHandler("http://example.invalid/"+secretKey, http.StatusFound))
 	defer redirect.Close()
-	status, body := post(t, newProxy(t, redirect.URL+"/v2/"+secretKey, Profile{}), req)
+	status, body := post(t, newProxy(t, redirect.URL+"/v2/"+secretKey, Settings{}), req)
 	if status != http.StatusBadGateway || strings.Contains(body, secretKey) {
 		t.Fatalf("redirect: %d %s", status, body)
 	}
@@ -154,9 +154,9 @@ func TestNeverRevealsUpstreamURL(t *testing.T) {
 	deadURL := dead.URL + "/v2/" + secretKey
 	dead.Close()
 	var logged strings.Builder
-	p := Profile{Chains: []string{"bsc"}}
+	p := Settings{Chains: []string{"bsc"}}
 	_, srv := newGateway(t, Options{Logger: newLogger(&logged)}, []*Upstream{ready(t, bscChain, deadURL)},
-		Token{ID: "a", Name: "indexer", Secret: tokenA, Profile: &p})
+		tok("a", "indexer", tokenA, &p))
 	status, body = post(t, srv.URL+"/"+tokenA+"/bsc", req)
 	if status != http.StatusBadGateway || strings.Contains(body, secretKey) || strings.Contains(body, dead.URL) {
 		t.Fatalf("transport error: %d %s", status, body)
@@ -174,7 +174,7 @@ func TestNeverRevealsUpstreamURL(t *testing.T) {
 
 func TestRejectsNonPost(t *testing.T) {
 	up := newUpstream(t)
-	if status, _ := get(t, newProxy(t, up.url(), Profile{})); status != http.StatusMethodNotAllowed {
+	if status, _ := get(t, newProxy(t, up.url(), Settings{})); status != http.StatusMethodNotAllowed {
 		t.Fatalf("GET = %d", status)
 	}
 }
@@ -194,7 +194,7 @@ func TestResolveUpstream(t *testing.T) {
 
 	// No URL: present but unconfigured.
 	for _, e := range []*Endpoint{nil, {Name: "ankr"}, {Name: "ankr", URL: "  "}} {
-		if up := ResolveUpstream(bscChain, e, nil, 0); up.Source != "" || up.Configured() || up.Err != nil {
+		if up := ResolveUpstream(bscChain, e, nil, 0); up.Configured() || up.Err != nil {
 			t.Fatalf("unset %v: %+v", e, up)
 		}
 	}
@@ -240,34 +240,45 @@ func TestCheckChainID(t *testing.T) {
 
 func TestWriteStatus(t *testing.T) {
 	const key = "0123456789abcdef"
-	node := &Endpoint{Name: "my-node", URL: "https://bsc.example/" + key}
-	ankrArb := &Endpoint{Name: "ankr", URL: "https://rpc.ankr.com/arbitrum/" + key}
-	ankrSol := &Endpoint{Name: "ankr", URL: "https://rpc.ankr.com/solana/" + key}
-	bsc := ResolveUpstream(Chain{Name: "bsc", Family: EVM, ChainID: 56, Endpoint: "my-node"}, node, nil, 0)
-	bsc.Ready = true
-	arb := ResolveUpstream(Chain{Name: "arbitrum", Family: EVM, ChainID: 42161, Endpoint: "ankr"}, ankrArb, nil, 0)
+	up := func(id, name, rawURL string, c Chain) *Upstream {
+		return ResolveUpstream(c, &Endpoint{ID: id, Name: name, URL: rawURL}, nil, 0)
+	}
+	bscC := Chain{Name: "bsc", Family: EVM, ChainID: 56}
+	fe := up("1", "ankr-fe", "https://rpc.ankr.com/bsc/"+key, bscC)
+	fe.Ready = true
+	be := up("2", "ankr-be", "https://rpc.ankr.com/bsc/be"+key, bscC)
+	be.Ready = true
+	arb := up("4", "ankr-be-arb", "https://rpc.ankr.com/arbitrum/be"+key, Chain{Name: "arbitrum", Family: EVM, ChainID: 42161})
 	arb.Err = errors.New("upstream is chain 56, expected 42161")
-	sol := ResolveUpstream(Chain{Name: "solana", Family: Solana, GenesisHash: solanaGenesis, Endpoint: "ankr"}, ankrSol, nil, 0)
+	sol := up("5", "node", "https://sol.example/"+key, Chain{Name: "solana", Family: Solana, GenesisHash: solanaGenesis})
 	sol.Ready = true
-	opt := ResolveUpstream(Chain{Name: "optimism", Family: EVM, ChainID: 10}, nil, nil, 0)
+	g := New(Options{})
+	g.SetUpstreams([]*Upstream{fe, be, arb, sol})
+	g.SetTokens([]Token{
+		{ID: "a", Name: "frontend", Secret: tokenA, URLs: []string{"1", "3", "5"}},
+		{ID: "b", Name: "backend", Secret: tokenB, URLs: []string{"2", "4"}, DailyBudget: 100, Methods: []string{"eth_*"}},
+		{ID: "c", Name: "idle", Secret: "idle0123456789abcdefghijkl"},
+	})
 	var b strings.Builder
-	WriteStatus(&b, "0.0.0.0:8545", []*Upstream{bsc, arb, sol, opt},
-		[]URLInfo{{Name: "my-node", Chain: "bsc", Enabled: true, InUse: true}, {Name: "old-key", Chain: "bsc"},
-			{Name: "ankr", Chain: "arbitrum", Enabled: true, InUse: true}},
-		[]Profile{{Name: "read-only", Chains: []string{"bsc", "solana"}, DailyBudget: 100, Methods: []string{"eth_*", "get*"}}}, 2)
+	g.WriteStatus(&b, "0.0.0.0:8545", []URLInfo{
+		{ID: "1", Name: "ankr-fe", Chain: "bsc", Enabled: true}, {ID: "2", Name: "ankr-be", Chain: "bsc", Enabled: true},
+		{ID: "3", Name: "old", Chain: "bsc"}, {ID: "4", Name: "ankr-be-arb", Chain: "arbitrum", Enabled: true},
+		{ID: "5", Name: "node", Chain: "solana", Enabled: true},
+	})
 	out := b.String()
 	for _, want := range []string{
 		"rpcgate on http://0.0.0.0:8545: proxy at /<token>/<chain>, usage at /dashboard, admin UI at /_/",
-		"bsc", "ready", "my-node", "arbitrum", "failed", "arbitrum: upstream is chain 56, expected 42161",
-		"solana", solanaGenesis, "optimism", "add an enabled URL for it",
-		"  bsc       my-node  yes      yes\n", "  bsc       old-key  no       \n", "  arbitrum  ankr     yes      yes\n",
-		"read-only", "bsc,solana", "100/day", "eth_*,get*", "Enabled tokens: 2",
+		"  bsc       ankr-fe      56", "ready", "  bsc       old          56", "disabled",
+		"  arbitrum  ankr-be-arb  42161", "failed", "ankr-be-arb (arbitrum): upstream is chain 56, expected 42161",
+		"frontend  200000/day  defaults  bsc (ankr-fe), solana (node)",
+		"backend   100/day     eth_*     bsc (ankr-be), arbitrum (ankr-be-arb, failed)",
+		"idle      200000/day  defaults  (none; select its URLs in the admin UI)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, key) || strings.Contains(out, "bsc.example") || strings.Contains(out, "rpc.ankr.com") {
-		t.Fatalf("status reveals an upstream:\n%s", out)
+	if strings.Contains(out, key) || strings.Contains(out, "sol.example") || strings.Contains(out, "rpc.ankr.com") || strings.Contains(out, tokenA) {
+		t.Fatalf("status reveals a secret:\n%s", out)
 	}
 }

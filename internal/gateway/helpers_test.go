@@ -91,8 +91,8 @@ func answer(body []byte) string {
 }
 
 var (
-	bscChain    = Chain{Name: "bsc", Family: EVM, ChainID: 56, Endpoint: "test"}
-	solanaChain = Chain{Name: "solana", Family: Solana, GenesisHash: solanaGenesis, Endpoint: "test"}
+	bscChain    = Chain{Name: "bsc", Family: EVM, ChainID: 56}
+	solanaChain = Chain{Name: "solana", Family: Solana, GenesisHash: solanaGenesis}
 )
 
 // endpoint is a test URL entry for rawURL.
@@ -109,26 +109,45 @@ func ready(t *testing.T, c Chain, rawURL string) *Upstream {
 	return up
 }
 
-// newGateway serves g over HTTP.
+// Settings is a test shorthand for a token's settings: Chains become the
+// token's URLs, as every test upstream's ID is its chain's name.
+type Settings struct {
+	Name        string
+	Chains      []string
+	Methods     []string
+	DailyBudget int
+}
+
+func tok(id, name, secret string, p *Settings) Token {
+	return Token{ID: id, Name: name, Secret: secret, URLs: p.Chains, Methods: p.Methods, DailyBudget: p.DailyBudget}
+}
+
+// newGateway serves g over HTTP. Upstreams without an ID get their chain's
+// name as one.
 func newGateway(t *testing.T, opts Options, ups []*Upstream, tokens ...Token) (*Gateway, *httptest.Server) {
 	t.Helper()
 	g := New(opts)
-	g.SetChains(ups)
+	for _, u := range ups {
+		if u.ID == "" {
+			u.ID = u.Chain.Name
+		}
+	}
+	g.SetUpstreams(ups)
 	g.SetTokens(tokens)
 	srv := httptest.NewServer(g)
 	t.Cleanup(srv.Close)
 	return g, srv
 }
 
-// newProxy is a single-chain proxy: tokenA on bsc with profile p.
+// newProxy is a single-chain proxy: tokenA on bsc with settings p.
 // It returns the URL to call.
-func newProxy(t *testing.T, upURL string, p Profile) string {
+func newProxy(t *testing.T, upURL string, p Settings) string {
 	t.Helper()
 	if p.Chains == nil {
 		p.Chains = []string{"bsc"}
 	}
 	_, srv := newGateway(t, Options{}, []*Upstream{ready(t, bscChain, upURL)},
-		Token{ID: "a", Name: "indexer", Secret: tokenA, Profile: &p})
+		tok("a", "indexer", tokenA, &p))
 	return srv.URL + "/" + tokenA + "/bsc"
 }
 

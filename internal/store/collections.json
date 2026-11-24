@@ -47,7 +47,7 @@
       },
       {
         "autogeneratePattern": "",
-        "help": "e.g. ankr. Logs and the status table show this, never the URL.",
+        "help": "e.g. ankr-fe. Tokens pick URLs by this; logs, status and usage show it, never the URL.",
         "hidden": false,
         "id": "text1579384326",
         "max": 32,
@@ -76,7 +76,7 @@
         "type": "text"
       },
       {
-        "help": "A chain uses its first enabled URL (oldest first). Untick to switch without deleting.",
+        "help": "A token uses the first enabled one of its URLs for a chain (oldest first). Untick to switch without deleting.",
         "hidden": false,
         "id": "bool1358543748",
         "name": "enabled",
@@ -107,132 +107,6 @@
       }
     ],
     "indexes": [],
-    "created": "",
-    "updated": "",
-    "system": false
-  },
-  {
-    "id": "rg_profiles",
-    "listRule": null,
-    "viewRule": null,
-    "createRule": null,
-    "updateRule": null,
-    "deleteRule": null,
-    "name": "profiles",
-    "type": "base",
-    "fields": [
-      {
-        "autogeneratePattern": "[a-z0-9]{15}",
-        "help": "",
-        "hidden": false,
-        "id": "text3208210256",
-        "max": 15,
-        "min": 15,
-        "name": "id",
-        "pattern": "^[a-z0-9]+$",
-        "presentable": false,
-        "primaryKey": true,
-        "required": true,
-        "system": true,
-        "type": "text"
-      },
-      {
-        "autogeneratePattern": "",
-        "help": "",
-        "hidden": false,
-        "id": "text1579384326",
-        "max": 64,
-        "min": 0,
-        "name": "name",
-        "pattern": "",
-        "presentable": true,
-        "primaryKey": false,
-        "required": true,
-        "system": false,
-        "type": "text"
-      },
-      {
-        "help": "Chains tokens with this profile may call.",
-        "hidden": false,
-        "id": "select1611589309",
-        "maxSelect": 8,
-        "name": "chains",
-        "presentable": false,
-        "required": false,
-        "system": false,
-        "type": "select",
-        "values": [
-          "bsc",
-          "arbitrum",
-          "base",
-          "polygon",
-          "avalanche",
-          "solana",
-          "ankr",
-          "helius"
-        ]
-      },
-      {
-        "help": "JSON array of method patterns; * matches anything, e.g. [\"*\"] or [\"eth_*\", \"getProgramAccounts\"]. Empty: each family's read-only defaults.",
-        "hidden": false,
-        "id": "json1457715049",
-        "maxSize": 65536,
-        "name": "methods",
-        "presentable": false,
-        "required": false,
-        "system": false,
-        "type": "json"
-      },
-      {
-        "help": "Requests per token per chain per UTC day; 0 = unlimited.",
-        "hidden": false,
-        "id": "number4073504983",
-        "max": null,
-        "min": 0,
-        "name": "daily_budget",
-        "onlyInt": true,
-        "presentable": false,
-        "required": false,
-        "system": false,
-        "type": "number"
-      },
-      {
-        "help": "Items per JSON-RPC batch; 0 = 50.",
-        "hidden": false,
-        "id": "number1259492319",
-        "max": null,
-        "min": 0,
-        "name": "max_batch",
-        "onlyInt": true,
-        "presentable": false,
-        "required": false,
-        "system": false,
-        "type": "number"
-      },
-      {
-        "hidden": false,
-        "id": "autodate2990389176",
-        "name": "created",
-        "onCreate": true,
-        "onUpdate": false,
-        "presentable": false,
-        "system": false,
-        "type": "autodate"
-      },
-      {
-        "hidden": false,
-        "id": "autodate3332085495",
-        "name": "updated",
-        "onCreate": true,
-        "onUpdate": true,
-        "presentable": false,
-        "system": false,
-        "type": "autodate"
-      }
-    ],
-    "indexes": [
-      "CREATE UNIQUE INDEX `idx_profiles_name` ON `profiles` (name)"
-    ],
     "created": "",
     "updated": "",
     "system": false
@@ -304,17 +178,41 @@
       },
       {
         "cascadeDelete": false,
-        "collectionId": "rg_profiles",
-        "help": "",
+        "collectionId": "rg_urls",
+        "help": "The upstream URLs this token uses; they also decide its chains. Per chain, the first enabled one (oldest first) is used.",
         "hidden": false,
-        "id": "relation2170006031",
-        "maxSelect": 1,
+        "id": "relation714356641",
+        "maxSelect": 999,
         "minSelect": 0,
-        "name": "profile",
+        "name": "urls",
         "presentable": false,
-        "required": true,
+        "required": false,
         "system": false,
         "type": "relation"
+      },
+      {
+        "help": "JSON array of method patterns; * matches anything, e.g. [\"*\"] or [\"eth_*\", \"getProgramAccounts\"]. Empty: each chain's read-only defaults.",
+        "hidden": false,
+        "id": "json1457715049",
+        "maxSize": 65536,
+        "name": "methods",
+        "presentable": false,
+        "required": false,
+        "system": false,
+        "type": "json"
+      },
+      {
+        "help": "Requests per chain per UTC day; 0 = 200000.",
+        "hidden": false,
+        "id": "number4073504983",
+        "max": null,
+        "min": 0,
+        "name": "daily_budget",
+        "onlyInt": true,
+        "presentable": false,
+        "required": false,
+        "system": false,
+        "type": "number"
       },
       {
         "help": "Its latest request, to within 15 seconds. Set by rpcgate.",
@@ -444,6 +342,21 @@
       },
       {
         "autogeneratePattern": "",
+        "help": "The name of the URL that served it.",
+        "hidden": false,
+        "id": "text4101391790",
+        "max": 32,
+        "min": 0,
+        "name": "url",
+        "pattern": "",
+        "presentable": false,
+        "primaryKey": false,
+        "required": false,
+        "system": false,
+        "type": "text"
+      },
+      {
+        "autogeneratePattern": "",
         "help": "",
         "hidden": false,
         "id": "text1582905952",
@@ -518,7 +431,7 @@
       }
     ],
     "indexes": [
-      "CREATE UNIQUE INDEX `idx_usage_key` ON `usage` (day, token_id, chain, method)"
+      "CREATE UNIQUE INDEX `idx_usage_key` ON `usage` (day, token_id, chain, url, method)"
     ],
     "created": "",
     "updated": "",
